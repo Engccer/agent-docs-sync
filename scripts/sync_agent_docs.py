@@ -151,12 +151,15 @@ def save_state(state: dict) -> None:
 # ── 지침 파일 동기화 (CLAUDE.md → AGENTS.md, 루트 + 모든 하위 폴더) ─────────
 def iter_nested_canonicals() -> list[Path]:
     """루트 CLAUDE.md 를 제외한 하위 폴더의 CLAUDE.md 상대경로 목록.
-    스킬 트리(.claude/.agents)·VCS·캐시 폴더는 walk 에서 가지치기한다."""
+    스킬 트리(.claude/.agents)·VCS·캐시 폴더는 walk 에서 가지치기한다.
+    파일명 비교는 대소문자 무관(Windows 파일시스템 호환)."""
     found: list[Path] = []
     for dirpath, dirnames, _filenames in os.walk(ROOT):
         dirnames[:] = [d for d in dirnames if d not in DOC_EXCLUDE_DIRS]
-        if "CLAUDE.md" in _filenames:
-            rel = (Path(dirpath) / "CLAUDE.md").relative_to(ROOT)
+        # Windows 에서 claude.md / CLAUDE.MD 등 대소문자 변형도 인식.
+        actual = next((f for f in _filenames if f.lower() == "claude.md"), None)
+        if actual is not None:
+            rel = (Path(dirpath) / actual).relative_to(ROOT)
             if rel.parent == Path("."):
                 continue  # 루트는 아래에서 별도 처리
             found.append(rel)
