@@ -117,6 +117,11 @@ def read_text(path: Path) -> str:
 
 
 def write_text(path: Path, text: str) -> None:
+    # 생성물(AGENTS.md 등)이 정본(CLAUDE.md)을 가리키는 symlink 로 존재하면,
+    # 그대로 쓰면 link 를 따라가(follow) 정본을 덮어써 오염시킨다. symlink 는
+    # 먼저 끊고 실제 파일로 대체한다(write-through 정본 오염 방지).
+    if path.is_symlink():
+        path.unlink()
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
