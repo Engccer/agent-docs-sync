@@ -13,17 +13,23 @@ sync_agent_docs.py — 에이전트 지침·스킬 단방향 동기화
    따라서 "정본 → 생성물" 한 방향만, 내용(바이트) 비교로 동작한다.)
 - 생성물은 "빌드 산출물"로 취급. 직접 수정하지 않는다.
 - AGENTS.md 발산 경고(divergence guard): 직전 동기화 이후 손으로 수정됐으면 mtime 이 아니라
-  "내용 해시"로 감지해 경고하고 중단한다(--force 로 강행). 상태는 .agent-docs-sync.json 에 저장.
+  "내용 해시"로 감지한다. 발산해도 전체 실행을 멈추지 않는다 — 경고를 출력하고 "그 파일 하나만"
+  건너뛴 뒤 나머지 문서·스킬은 정상 동기화한다(--force 면 발산 파일도 정본 기준으로 덮어쓴다).
+  발산이 하나라도 있으면 종료 코드 2 로 "건너뛴 파일 있음(확인 필요)"을 알린다. 상태는 .agent-docs-sync.json 에 저장.
 - 스킬 폴더는 정본을 그대로 미러링한다: 새/변경 파일은 복사, 정본에서 사라진 파일은 생성본에서도 정리.
   단 자격증명·캐시·OS 잡파일은 보안·청결을 위해 제외한다(아래 SKILL_EXCLUDE_*).
   스킬 트리는 파일 수가 많아 개별 발산 경고는 두지 않는다(정본 기준 무조건 미러링).
 
 사용법 (프로젝트 폴더 어디서 실행하든 스크립트 위치 기준으로 동작):
-    python sync_agent_docs.py            # 동기화 (AGENTS.md 발산 시 경고 후 중단)
+    python sync_agent_docs.py            # 동기화 (발산한 AGENTS.md만 건너뛰고 나머지는 모두 반영)
     python sync_agent_docs.py --check    # 드라이런: 무엇이 바뀔지만 출력
-    python sync_agent_docs.py --force    # AGENTS.md 발산 경고를 무시하고 강제 덮어쓰기
+    python sync_agent_docs.py --force    # 발산 경고를 무시하고 발산 파일도 정본 기준으로 덮어쓰기
 
-종료 코드: 0 정상(동기화/최신) · 2 발산 감지로 중단 · 1 기타 오류
+종료 코드:
+  0  전부 최신이거나 정상 반영됨(발산 없음)
+  2  발산 파일을 건너뜀 — 나머지는 정상 동기화됨. 실패가 아니라 "건너뛴 파일 확인 필요" 신호.
+     (무관한 폴더의 발산이 떠 있어도 내가 방금 고친 CLAUDE.md 의 AGENTS.md 는 그대로 생성/갱신된다.)
+  1  기타 오류(정본 CLAUDE.md 부재 등)
 """
 
 from __future__ import annotations
@@ -217,11 +223,12 @@ def _sync_doc_pair(canonical: Path, target: Path, state_key: str, state: dict, a
     return False, False
 
 
-def sync_docs(args, state) -> tuple[bool, bool]:
-    """루트 + 모든 하위 폴더의 CLAUDE.md → 형제 AGENTS.md. 반환: (any_diverged, any_written).
+def sync_docs(args, state) -> tuple[list[str], bool]:
+    """루트 + 모든 하위 폴더의 CLAUDE.md → 형제 AGENTS.md. 반환: (diverged_keys, any_written).
 
+    diverged_keys: 발산으로 "건너뛴" AGENTS.md 상태키 목록(있어도 나머지는 모두 동기화됨).
     루트 상태키는 하위 호환을 위해 그대로 "AGENTS.md", 하위는 POSIX 상대경로를 쓴다."""
-    any_diverged = False
+    diverged_keys: list[str] = []
     any_written = False
 
     # 동기화 대상 쌍: (정본 CLAUDE.md, 생성 AGENTS.md, 상태키).
@@ -234,7 +241,8 @@ def sync_docs(args, state) -> tuple[bool, bool]:
 
     for canonical, target, key in pairs:
         diverged, written = _sync_doc_pair(canonical, target, key, state, args)
-        any_diverged = any_diverged or diverged
+        if diverged:
+            diverged_keys.append(key)
         any_written = any_written or written
 
     # 고아 정리: 직전에 우리가 생성·관리하던 AGENTS.md 중 대응 CLAUDE.md 가 사라진 것.
@@ -251,7 +259,7 @@ def sync_docs(args, state) -> tuple[bool, bool]:
         if not args.check:
             del state[key]
 
-    return any_diverged, any_written
+    return diverged_keys, any_written
 
 
 # ── 스킬 폴더 동기화 (.claude/skills/ → .agents/skills/) ──────────────────
@@ -354,13 +362,20 @@ def main() -> int:
         return 1
 
     state = load_state()
-    any_diverged, docs_written = sync_docs(args, state)
+    diverged_keys, docs_written = sync_docs(args, state)
     skills_written = sync_skills(args)
 
     if (docs_written or skills_written) and not args.check:
         save_state(state)
 
-    if any_diverged:
+    if diverged_keys:
+        # 발산은 "부분 성공" — 건너뛴 파일만 빼고 나머지는 모두 반영됐다. 전체가 멈춘 게 아님을 명시한다.
+        print(
+            f"\n[요약] 발산으로 건너뛴 AGENTS.md {len(diverged_keys)}개: "
+            + ", ".join(diverged_keys)
+            + "\n        ↳ 나머지 문서·스킬은 정상 동기화됨(종료 코드 2 = 건너뛴 파일 확인 필요, 실패 아님)."
+            + "\n        ↳ 정본이 맞으면 --force 로 덮어쓰고, 생성물에 살릴 내용이 있으면 CLAUDE.md 로 옮긴 뒤 재실행."
+        )
         return 2
     if args.check:
         print("\n(--check 모드: 실제로 쓰지 않았습니다.)")

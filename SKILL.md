@@ -32,12 +32,16 @@ Claude Code는 `CLAUDE.md`와 `.claude/skills/`를 읽지만, Codex·Antigravity
 
 ```bash
 cd <프로젝트 루트>
-python sync_agent_docs.py            # 동기화 (AGENTS.md 발산 시 경고 후 중단)
+python sync_agent_docs.py            # 동기화 (발산한 AGENTS.md만 건너뛰고 나머지는 모두 반영)
 python sync_agent_docs.py --check    # 드라이런: 무엇이 바뀔지만 출력
-python sync_agent_docs.py --force    # AGENTS.md 발산 경고를 무시하고 강제 덮어쓰기
+python sync_agent_docs.py --force    # 발산 경고를 무시하고 발산 파일도 정본 기준으로 덮어쓰기
 ```
 
-종료 코드: `0` 정상 · `2` 발산 감지로 중단 · `1` 기타 오류. 스크립트는 자기 위치(`Path(__file__).parent`)를 프로젝트 루트로 삼으므로, 루트에 둔 사본을 그 자리에서 실행하면 된다.
+종료 코드: `0` 전부 최신/반영(발산 없음) · `2` **발산 파일을 건너뜀(나머지는 정상 동기화 — 확인 필요, 실패 아님)** · `1` 기타 오류.
+
+> **발산이 떠도 내 변경은 반영된다.** 한 폴더의 `AGENTS.md`가 발산해도 실행 전체가 멈추지 않는다. 스크립트는 발산한 그 파일 **하나만** 건너뛰고(경고 출력) 나머지 모든 `CLAUDE.md`→`AGENTS.md`와 스킬을 정상 동기화한 뒤, 마지막에 `[요약]` 한 줄로 건너뛴 파일을 모아 보여주고 종료 코드 `2`를 낸다. 즉 **무관한 다른 폴더의 묵은 발산 때문에 방금 고친 `CLAUDE.md`의 미러링이 막히는 일은 없다.** `--force` 없이 그냥 실행하면 된다(`--force`는 그 발산 파일까지 정본으로 덮고 싶을 때만).
+
+스크립트는 자기 위치(`Path(__file__).parent`)를 프로젝트 루트로 삼으므로, 루트에 둔 사본을 그 자리에서 실행하면 된다.
 
 ## 신규 프로젝트 셋업 워크플로우
 
