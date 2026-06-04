@@ -11,6 +11,44 @@ description: >-
 
 # agent-docs-sync — 멀티 에이전트 호환 지침·스킬 동기화
 
+## ⚠ 실행 전 필수 게이트 — 정본 방향 확정 (건너뛰면 정본 파괴)
+
+**이 스킬의 단 하나의 전제: `CLAUDE.md` + `.claude/skills/`가 정본(canonical)이고, `AGENTS.md` + `.agents/skills/`는 생성물(derived)이다.** 이 방향이 거짓인 환경에서 실행하면, 동기화가 진짜 정본을 "고아"로 판단해 **삭제**한다. 워크플로우의 어떤 단계보다 먼저 아래 게이트를 통과해야 한다.
+
+**위반의 글자 = 위반의 정신.** "이 정도면 정본이 맞겠지"라는 추정으로 게이트를 건너뛰는 것은 게이트를 어기는 것이다. 방향은 추정하지 말고 아래 명령으로 매번 확정한다.
+
+### 게이트 1 — 스킬 방향 (가장 위험: 데이터 손실)
+
+```bash
+find <루트>/.claude/skills -maxdepth 1 -type l    # symlink 스킬 목록 (있으면 의심)
+```
+
+- `.claude/skills/`의 항목 다수가 **symlink**이고 그 대상이 `.agents/skills/`(또는 외부 경로)이면 → **정본 방향이 역전된 환경**이다. `.agents/skills/`가 실제 정본이고 `.claude/skills/`는 그쪽으로 거는 미러다.
+- 이 경우 **스킬 미러링을 절대 실행하지 마라.** 이유: `iter_source_skill_files()`의 `os.walk(followlinks=False)`가 symlink 스킬 내부를 누락 → 스크립트가 "정본엔 스킬이 거의 없다"고 오인 → 고아 정리(`sync_skills`)가 `.agents/skills/`의 **실제 스킬 파일을 전부 삭제**한다.
+- 판정: 역전 감지 시 미러링 단계를 건너뛰고 사용자에게 보고한다. 애초에 불필요하기도 하다 — Codex·Antigravity는 이미 `.agents/skills/`를 직접 읽으므로, 정본이 그 표준 위치에 있으면 만들 생성물이 없다.
+
+### 게이트 2 — 문서 방향 (symlink-trap)
+
+```bash
+find <루트> -name AGENTS.md -type l               # AGENTS.md가 CLAUDE.md를 가리키는 symlink면 정본 오염
+```
+
+- `AGENTS.md`가 `CLAUDE.md`를 가리키는 symlink(또는 반대 방향)이면 쓰기가 링크를 따라가 정본을 덮어쓴다(최신 스크립트는 `write_text` 진입부 가드로 자동 치유하지만, 구버전 사본은 위험).
+- 목적지 실효성도 확인: 사용자 **글로벌** 지침을 다른 에이전트에 노출하려면 보통 `~/.codex/AGENTS.md`나 홈 `~/AGENTS.md`가 목적지다. `~/.claude/AGENTS.md`는 다른 에이전트가 자동으로 읽지 않는다.
+
+### Red Flags — STOP, 정본 방향부터 확인
+
+- `.claude/skills/` 안에 `->`(symlink)가 보인다
+- `--check`가 `removed N (예정)`으로 **대량 삭제**를 예고한다 (정상 동기화는 `[갱신]`/`[최신]` 위주)
+- 동기화 대상이 프로젝트 워크스페이스가 아니라 `~/.claude` 같은 **에이전트 홈**이다 (정본·플러그인 캐시·외부 symlink가 한 트리에 섞임)
+- "내가 만든 스킬이니 환경은 내가 안다"
+
+**위 신호 중 하나라도 있으면 미러링을 멈추고 방향을 실측 확인하라.**
+
+### 실측 근거 (이 게이트가 생긴 이유)
+
+2026-06-05, 작성자 본인의 환경(`~/.claude`)에서 스킬 48개 중 **45개가 `.agents/skills/`로의 symlink**였다(`k-skill-setup`이 agentskills.io 표준 위치에 실파일을 두고 `.claude/skills/`에서 역방향 링크). 게이트가 없던 탓에 에이전트가 미러링 실행 직전까지 갔고, 수동 진단으로만 "고아 정리가 실제 스킬 45개를 삭제"하는 결과를 사전에 막았다. **스킬을 만든 사람조차 자기 환경을 오인했다** — 그래서 추정이 아니라 위 명령으로 확정한다.
+
 ## 무엇을 하는가
 
 Claude Code는 `CLAUDE.md`와 `.claude/skills/`를 읽지만, Codex·Antigravity·Gemini CLI 같은 다른 코딩 에이전트는 각자 다른 위치를 본다. 이 스킬은 **하나의 정본(`CLAUDE.md` + `.claude/skills/`)**에서 다른 에이전트가 네이티브로 인식하는 생성물을 만들어, 같은 작업 공간을 여러 에이전트가 동일한 컨텍스트로 공유하게 한다.
