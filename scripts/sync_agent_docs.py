@@ -19,6 +19,14 @@ sync_agent_docs.py — 에이전트 지침·스킬 단방향 동기화
 - 스킬 폴더는 정본을 그대로 미러링한다: 새/변경 파일은 복사, 정본에서 사라진 파일은 생성본에서도 정리.
   단 자격증명·캐시·OS 잡파일은 보안·청결을 위해 제외한다(아래 SKILL_EXCLUDE_*).
   스킬 트리는 파일 수가 많아 개별 발산 경고는 두지 않는다(정본 기준 무조건 미러링).
+- 스킬 검증(validate_skills): 미러링과 별개로 정본 각 SKILL.md 의 frontmatter 가
+  agentskills.io 표준(Codex·Antigravity 가 쓰는 엄격한 파서)에서 깨지지 않는지 점검한다.
+  PyYAML 이 있으면 정식 파싱으로, 없으면 휴리스틱으로 frontmatter 부재·plain scalar 콜론·
+  name↔폴더명 불일치를 잡아 경고한다(동기화 자체는 차단하지 않음). 가장 흔한 함정:
+  description 값에 ': '(콜론+공백)이 든 plain scalar 는 엄격한 파서에서 'mapping values are
+  not allowed here' 로 실패한다 → 'description: >-' block scalar 로 감싸면 안전하다.
+  (Claude Code 자체 파서는 관대해 이를 그냥 로드하므로, 이 검증이 없으면 다른 에이전트에서만
+   조용히 깨진다.)
 
 사용법 (프로젝트 폴더 어디서 실행하든 스크립트 위치 기준으로 동작):
     python sync_agent_docs.py            # 동기화 (발산한 AGENTS.md만 건너뛰고 나머지는 모두 반영)
@@ -26,8 +34,9 @@ sync_agent_docs.py — 에이전트 지침·스킬 단방향 동기화
     python sync_agent_docs.py --force    # 발산 경고를 무시하고 발산 파일도 정본 기준으로 덮어쓰기
 
 종료 코드:
-  0  전부 최신이거나 정상 반영됨(발산 없음)
-  2  발산 파일을 건너뜀 — 나머지는 정상 동기화됨. 실패가 아니라 "건너뛴 파일 확인 필요" 신호.
+  0  전부 최신이거나 정상 반영됨(발산·스킬 검증 경고 없음)
+  2  발산 파일을 건너뜀, 또는 스킬 frontmatter 검증 경고가 있음 — 나머지는 정상 동기화됨.
+     실패가 아니라 "확인 필요" 신호.
      (무관한 폴더의 발산이 떠 있어도 내가 방금 고친 CLAUDE.md 의 AGENTS.md 는 그대로 생성/갱신된다.)
   1  기타 오류(정본 CLAUDE.md 부재 등)
 """
@@ -351,6 +360,103 @@ def sync_skills(args) -> bool:
     return False
 
 
+# ── 스킬 frontmatter 검증 (생성물이 Codex·Antigravity 표준에서 깨지지 않는지) ──
+def _load_frontmatter(text: str) -> tuple[str, dict | None, str]:
+    """SKILL.md 본문에서 frontmatter 블록을 점검한다.
+    반환: (status, data, detail)
+      status = "ok" | "no_frontmatter" | "unclosed" | "yaml_error" | "not_mapping"
+    PyYAML 이 있으면 정식 파싱(엄격한 Codex 파서와 같은 실패를 재현)하고,
+    없으면 최소 휴리스틱(frontmatter 유무 + plain scalar 콜론 + name 추출)으로 폴백한다.
+    어느 쪽이든 우리가 실제로 겪은 함정(콜론 깨짐·frontmatter 부재·name 불일치)은 잡는다."""
+    if not text.startswith("---"):
+        return "no_frontmatter", None, ""
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return "unclosed", None, ""
+    fm = parts[1]
+    try:
+        import yaml  # type: ignore
+    except ImportError:
+        # 폴백: PyYAML 없는 PC. 모든 top-level plain scalar 필드의 ': '(콜론+공백)를
+        # 휴리스틱으로 잡는다. description 뿐 아니라 compatibility 등 임의 필드 포함 —
+        # 실측 함정: liteparse 의 'compatibility: Requires … macOS: Homebrew …' 처럼
+        # description 이 아닌 필드의 콜론이 frontmatter 전체 파싱을 깨뜨린다.
+        import re as _re
+        data: dict = {}
+        for line in fm.splitlines():
+            # 들여쓰기 줄(매핑 하위 항목·block scalar 본문)은 검사 대상이 아니다.
+            if not line[:1] or line[0] in (" ", "\t"):
+                continue
+            m = _re.match(r"^([A-Za-z_][\w-]*):(.*)$", line)
+            if not m:
+                continue
+            key, val = m.group(1), m.group(2).strip()
+            # plain scalar(따옴표·block scalar·flow 컬렉션·매핑 헤더가 아님) 값에 ': ' 가
+            # 있으면 엄격한 파서에서 'mapping values are not allowed here' 로 실패한다.
+            if val and val[:1] not in ('"', "'", ">", "|", "[", "{") and ": " in val:
+                return ("yaml_error", None,
+                        f"'{key}' 필드의 plain scalar 값에 ': '(콜론+공백)이 있음 — "
+                        "block scalar '>-' 로 감싸세요")
+            if key == "name":
+                data["name"] = val
+            elif key == "description":
+                # block scalar 면 본문이 다음 줄에 오므로 존재만 표시(빈값 오탐 방지).
+                data["description"] = val if (val and val[:1] not in (">", "|")) else "(block scalar)"
+        return ("ok", data, "") if data else ("not_mapping", None, "")
+    try:
+        data = yaml.safe_load(fm)
+    except yaml.YAMLError as e:
+        return "yaml_error", None, str(e).replace("\n", " ")[:100]
+    if not isinstance(data, dict):
+        return "not_mapping", None, ""
+    return "ok", data, ""
+
+
+def validate_skills() -> list[str]:
+    """정본 .claude/skills/<skill>/SKILL.md 가 agentskills.io 표준(Codex·Antigravity)에서
+    깨지지 않는지 점검하고, 문제 메시지 목록을 돌려준다(빈 목록 = 전부 통과).
+    동기화를 차단하진 않지만, 생성물이 다른 에이전트에서 조용히 무시될 위험을 사전 경고한다.
+
+    주의: name 의 비-ASCII(한글) 여부는 검사하지 않는다. 본 프로젝트는 한글 호출명(/스킬)을
+    의도적으로 유지하며, Antigravity 는 name 미준수 시 폴더명으로 폴백하므로 차단 사유가 아니다.
+    표준 위반으로 '깨지는' 것(파싱 실패·frontmatter 부재·name↔폴더명 불일치)만 잡는다."""
+    problems: list[str] = []
+    if not SKILLS_SRC.exists():
+        return problems
+    for child in sorted(SKILLS_SRC.iterdir()):
+        if not child.is_dir() or child.name in SKILL_EXCLUDE_DIRS:
+            continue
+        skill_md = child / "SKILL.md"
+        if not skill_md.exists():
+            # SKILL.md 가 없으면 스킬 폴더가 아닌 것으로 보고 건너뛴다(참고자료 폴더 등).
+            continue
+        status, data, detail = _load_frontmatter(read_text(skill_md))
+        rel = f"{child.name}/SKILL.md"
+        if status == "no_frontmatter":
+            problems.append(f"{rel}: frontmatter(--- 블록)가 없음 → 표준 에이전트가 스킬로 인식 못 함")
+            continue
+        if status == "unclosed":
+            problems.append(f"{rel}: frontmatter 닫는 --- 가 없음")
+            continue
+        if status == "yaml_error":
+            problems.append(f"{rel}: YAML 파싱 실패 — {detail}")
+            continue
+        if status == "not_mapping":
+            problems.append(f"{rel}: frontmatter 가 key:value 매핑이 아님")
+            continue
+        name = str(data.get("name", "")).strip() if data else ""
+        desc = data.get("description", "") if data else ""
+        if not name:
+            problems.append(f"{rel}: name 필드가 없음")
+        elif name != child.name:
+            problems.append(f"{rel}: name('{name}')가 폴더명('{child.name}')과 불일치 (표준은 일치 요구)")
+        if not isinstance(desc, str) or not desc.strip():
+            problems.append(f"{rel}: description 이 비어 있음")
+        elif len(desc) > 1024:
+            problems.append(f"{rel}: description {len(desc)}자 — 표준 권장 상한(1024자) 초과")
+    return problems
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="CLAUDE.md → AGENTS.md · .claude/skills → .agents/skills 단방향 동기화")
     parser.add_argument("--check", action="store_true", help="드라이런: 변경 사항만 출력하고 쓰지 않음")
@@ -368,6 +474,23 @@ def main() -> int:
     if (docs_written or skills_written) and not args.check:
         save_state(state)
 
+    # 정본 스킬 frontmatter 검증(생성물이 다른 에이전트에서 조용히 깨지지 않는지 사전 경고).
+    skill_problems = validate_skills()
+    if skill_problems:
+        print(
+            f"\n[스킬 검증 경고] 아래 SKILL.md 는 Codex·Antigravity 의 엄격한 파서에서 "
+            f"깨질 수 있습니다 ({len(skill_problems)}건):",
+            file=sys.stderr,
+        )
+        for p in skill_problems:
+            print(f"  - {p}", file=sys.stderr)
+        print(
+            "        ↳ 정본 .claude/skills/ 를 고친 뒤 다시 실행하세요. description 에 ': '(콜론+공백)이\n"
+            "          있으면 'description: >-' block scalar 로 감싸면 안전합니다(Claude Code 는 관대해 그냥\n"
+            "          로드하지만 다른 에이전트에서만 조용히 깨집니다).",
+            file=sys.stderr,
+        )
+
     if diverged_keys:
         # 발산은 "부분 성공" — 건너뛴 파일만 빼고 나머지는 모두 반영됐다. 전체가 멈춘 게 아님을 명시한다.
         print(
@@ -375,6 +498,13 @@ def main() -> int:
             + ", ".join(diverged_keys)
             + "\n        ↳ 나머지 문서·스킬은 정상 동기화됨(종료 코드 2 = 건너뛴 파일 확인 필요, 실패 아님)."
             + "\n        ↳ 정본이 맞으면 --force 로 덮어쓰고, 생성물에 살릴 내용이 있으면 CLAUDE.md 로 옮긴 뒤 재실행."
+        )
+        return 2
+    if skill_problems:
+        # 발산은 없지만 스킬 검증 경고가 있으면 같은 "확인 필요" 신호로 종료 코드 2.
+        print(
+            f"\n[요약] 스킬 검증 경고 {len(skill_problems)}건 — 문서·스킬 동기화 자체는 정상 완료됨"
+            "(종료 코드 2 = 확인 필요, 실패 아님)."
         )
         return 2
     if args.check:
