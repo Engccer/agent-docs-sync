@@ -64,6 +64,10 @@ ROOT = Path(__file__).resolve().parent
 CANONICAL = ROOT / "CLAUDE.md"   # 루트 정본
 STATE_FILE = ROOT / ".agent-docs-sync.json"
 
+# walk 가 junction/symlink 를 따라 ROOT 밖으로 나갔는지 판정하기 위한 기준 경로.
+# (.resolve() 로 ROOT 는 이미 심링크 해소된 절대경로이며, 대소문자 무관 비교를 위해 normcase.)
+ROOT_REAL = os.path.normcase(str(ROOT))
+
 # 재귀 문서 동기화에서 제외할 디렉터리(스킬 트리·VCS·캐시).
 # 루트뿐 아니라 모든 하위 폴더의 CLAUDE.md 마다 형제 AGENTS.md 를 생성하되,
 # 아래 폴더 안쪽은 walk 에서 가지치기해 건드리지 않는다.
@@ -167,8 +171,15 @@ def save_state(state: dict) -> None:
 def iter_nested_canonicals() -> list[Path]:
     """루트 CLAUDE.md 를 제외한 하위 폴더의 CLAUDE.md 상대경로 목록.
     스킬 트리(.claude/.agents)·VCS·캐시 폴더는 walk 에서 가지치기한다.
-    파일명 비교는 대소문자 무관(Windows 파일시스템 호환)."""
+    파일명 비교는 대소문자 무관(Windows 파일시스템 호환).
+
+    junction/symlink 로 ROOT 밖을 가리키는 폴더도 그대로 따라간다(의도적으로
+    외부 폴더를 프로젝트에 link 해 함께 동기화하는 경우가 있으므로). 다만 그런
+    경로의 AGENTS.md 는 프로젝트 트리 밖(다른 드라이브·동기화 폴더 등)에
+    생성/갱신되므로, 조용히 외부를 건드리지 않도록 [외부] 경고로 가시화한다."""
     found: list[Path] = []
+    external: list[tuple[Path, str]] = []
+    seen_ext: set[str] = set()
     for dirpath, dirnames, _filenames in os.walk(ROOT):
         dirnames[:] = [d for d in dirnames if d not in DOC_EXCLUDE_DIRS]
         # Windows 에서 claude.md / CLAUDE.MD 등 대소문자 변형도 인식.
@@ -178,6 +189,23 @@ def iter_nested_canonicals() -> list[Path]:
             if rel.parent == Path("."):
                 continue  # 루트는 아래에서 별도 처리
             found.append(rel)
+            # junction/symlink 로 ROOT 밖을 가리키면 외부 쓰기 → 경고 대상.
+            real = os.path.normcase(os.path.realpath(dirpath))
+            try:
+                inside = os.path.commonpath([real, ROOT_REAL]) == ROOT_REAL
+            except ValueError:
+                inside = False  # 다른 드라이브(C: vs G:) → 외부
+            if not inside and real not in seen_ext:
+                seen_ext.add(real)
+                external.append((rel.parent, os.path.realpath(dirpath)))
+    for relparent, target in external:
+        print(
+            f"[외부] {relparent.as_posix()}/ 는 junction/symlink 로 ROOT 밖을 가리킵니다 → {target}"
+        )
+        print(
+            "       이 경로의 AGENTS.md 는 프로젝트 트리 밖에 생성/갱신됩니다. 의도한 것인지 확인하세요"
+            " (그 폴더가 자체 동기화를 갖는 별도 프로젝트라면 여기서 제외하는 게 좋습니다)."
+        )
     return sorted(found, key=lambda p: str(p).lower())
 
 
