@@ -74,10 +74,10 @@ ROOT_REAL = os.path.normcase(str(ROOT))
 # (.claude/.agents 안의 CLAUDE.md 는 스킬 트리 소속 → 스킬 동기화가 따로 미러링.)
 DOC_EXCLUDE_DIRS = {".claude", ".agents", ".git", "__pycache__", "node_modules", ".venv", ".idea"}
 
-BODY_MARKER = "<!-- SYNC-BODY-START — 이 줄 아래 본문은 CLAUDE.md 와 100% 동일하게 자동 생성됨 -->"
+BODY_MARKER = "<!-- SYNC-BODY-START: 이 줄 아래 본문은 CLAUDE.md 와 100% 동일하게 자동 생성됨 -->"
 
 BANNER = (
-    "> 🤖 **이 파일은 자동 생성됩니다 — 직접 수정하지 마세요.**\n"
+    "> 🤖 **이 파일은 자동 생성됩니다. 직접 수정하지 마세요.**\n"
     "> 정본은 `CLAUDE.md` 입니다. 내용을 바꾸려면 `CLAUDE.md` 를 수정한 뒤\n"
     "> 프로젝트 루트에서 `python sync_agent_docs.py` 를 실행하세요.\n"
     "> 이 파일을 직접 고치면 다음 동기화 때 경고와 함께 덮어쓰기 대상이 됩니다.\n"
@@ -110,7 +110,7 @@ SKILLS_README = (
     "# (자동 생성) `.agents/skills/`\n"
     "\n"
     "이 폴더는 `.claude/skills/`(Claude Code 정본)에서 `python sync_agent_docs.py` 로 "
-    "미러링된 **생성물**입니다. 직접 수정하지 마세요 — 다음 동기화에서 정본 기준으로 덮어쓰입니다.\n"
+    "미러링된 **생성물**입니다. 직접 수정하지 마세요. 다음 동기화에서 정본 기준으로 덮어쓰입니다.\n"
     "\n"
     "- Codex·Antigravity 가 이 경로(`<repo-root>/.agents/skills/`)를 **네이티브로 자동 인식**합니다.\n"
     "  (둘 다 `agentskills.io` 오픈 표준 = `SKILL.md` + `name`·`description` 프런트매터)\n"
