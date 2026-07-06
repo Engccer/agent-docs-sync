@@ -228,9 +228,16 @@ def _sync_doc_pair(canonical: Path, target: Path, state_key: str, state: dict, a
     existing = read_text(target)
     existing_body_hash = sha256(extract_body(existing))
 
-    # 이미 최신이면 건너뜀.
-    if existing_body_hash == source_hash and prev_hash == source_hash:
-        print(f"[최신] {state_key} 변경 없음")
+    # 이미 최신이면 건너뜀. 본문이 정본과 일치하면 상태 해시가 낡았어도 발산이 아니다
+    # (다른 머신에서 생성된 AGENTS.md 를 pull 한 직후 등): 상태만 따라잡는다.
+    if existing_body_hash == source_hash:
+        if prev_hash == source_hash:
+            print(f"[최신] {state_key} 변경 없음")
+            return False, False
+        print(f"[최신] {state_key} 본문 이미 정본과 일치, 상태 해시만 갱신")
+        if not args.check:
+            state[state_key] = source_hash
+            return False, True
         return False, False
 
     # 발산 감지: 본문이 "직전 동기화 시 정본"과 다르면 = 손으로 수정됨(또는 관리 밖에서 생성).
