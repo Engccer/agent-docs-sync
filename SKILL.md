@@ -146,6 +146,12 @@ python sync_agent_docs.py --check    # 재실행 시 모두 "[최신]"이어야 
 
 `--force`는 발산 경고만 무시할 뿐, 보호 대상(자격증명·`_GENERATED.md`)은 건드리지 않는다.
 
+## 머신 간 동기화 폴더(NFC/NFD) 주의
+
+프로젝트 루트가 Google Drive 같은 **머신 간 동기화 폴더**면 `.agent-docs-sync.json`도 함께 동기화된다. macOS 는 파일명을 NFD 로, Windows 는 NFC 로 돌려주므로, 같은 한글 경로가 머신마다 다른 상태 키로 저장된다. 게다가 Google Drive 파일시스템은 NFD 별형 경로도 NFC 실파일로 해석하기 때문에, 구버전 스크립트에서는 고아 정리가 NFD 구키를 "대응 CLAUDE.md 없음"으로 오판하고 **살아 있는 `AGENTS.md` 를 별형 경로 경유로 실제 삭제**했다(2026-07-15 실사고: 한 드라이브에서 18개 오삭제. 증상 시그니처: ASCII 경로만 `[최신]`, 한글 경로는 전부 `[갱신]` 직후 `[정리]`).
+
+현재 스크립트는 두 겹으로 방어한다: ① 상태 키를 읽고 쓸 때 항상 NFC 정규화(`norm_key`), ② 고아 삭제 전 형제 `CLAUDE.md` 실존을 직접 확인(`has_sibling_canonical`). **배포본이 이 방어를 갖췄는지가 중요하다** — Drive 류 동기화 폴더에 구버전 사본이 남아 있으면 같은 사고가 재발하므로, 그런 프로젝트를 만나면 사본을 정본 스크립트로 갱신한다. 회귀 테스트: `python tests/test_sync_agent_docs.py`.
+
 ## 스킬 frontmatter 검증 (validate_skills)
 
 미러링과 별개로, 스크립트는 정본 각 `.claude/skills/<스킬>/SKILL.md`의 frontmatter가 **Codex·Antigravity가 쓰는 엄격한 `agentskills.io` YAML 파서에서 깨지지 않는지** 매 실행마다 점검한다. 동기화 자체는 차단하지 않고, 문제가 있으면 stderr에 `[스킬 검증 경고]`를 띄운 뒤 종료 코드 `2`(확인 필요)를 낸다.
@@ -181,8 +187,8 @@ description: >-
 - `ROOT = Path(__file__).resolve().parent` — 스크립트 위치가 곧 프로젝트 루트. 복사만 하면 어디서든 동작.
 - 문서 동기화: `CLAUDE.md` 본문에 배너를 붙여 `AGENTS.md` 생성. 본문 일치/직전 정본 해시로 최신·발산 판정.
 - 하위 폴더 walk 시 `DOC_EXCLUDE_DIRS`(`.claude`·`.agents`·`.git`·`__pycache__`·`node_modules`·`.venv`·`.idea`)는 가지치기. junction/심링크가 ROOT 밖을 가리키면 따라가되 `[외부]` 경고(위 "junction·심링크 주의").
-- 고아 정리: 대응 `CLAUDE.md`가 사라지고 배너 마커를 가진(=우리가 만든) `AGENTS.md`만 안전 삭제. 수동 파일은 보존.
-- 상태는 `.agent-docs-sync.json`에 정본 본문 해시로 저장. 루트 상태키는 `"AGENTS.md"`, 하위는 POSIX 상대경로.
+- 고아 정리: 대응 `CLAUDE.md`가 사라지고 배너 마커를 가진(=우리가 만든) `AGENTS.md`만 안전 삭제. 수동 파일은 보존. 삭제 전 **형제 `CLAUDE.md` 실존을 직접 확인**(`has_sibling_canonical`)하므로, 키 비교가 어긋나도 살아 있는 쌍은 지우지 않는다.
+- 상태는 `.agent-docs-sync.json`에 정본 본문 해시로 저장. 루트 상태키는 `"AGENTS.md"`, 하위는 POSIX 상대경로이며 **항상 NFC 로 정규화**(`norm_key`)한다.
 - 스킬 검증(`validate_skills`)은 미러링과 독립적으로 매 실행 정본 `SKILL.md` frontmatter를 점검한다(위 "스킬 frontmatter 검증" 참조).
 
 세부 구현은 `scripts/sync_agent_docs.py`의 docstring과 주석 참조.

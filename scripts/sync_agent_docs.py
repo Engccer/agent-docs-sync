@@ -16,6 +16,10 @@ sync_agent_docs.py — 에이전트 지침·스킬 단방향 동기화
   "내용 해시"로 감지한다. 발산해도 전체 실행을 멈추지 않는다 — 경고를 출력하고 "그 파일 하나만"
   건너뛴 뒤 나머지 문서·스킬은 정상 동기화한다(--force 면 발산 파일도 정본 기준으로 덮어쓴다).
   발산이 하나라도 있으면 종료 코드 2 로 "건너뛴 파일 있음(확인 필요)"을 알린다. 상태는 .agent-docs-sync.json 에 저장.
+- 상태 키는 항상 NFC 로 정규화한다(norm_key). 상태 파일이 Google Drive 로 머신 간 동기화되면
+  macOS(NFD)·Windows(NFC)가 같은 한글 경로를 다른 키로 저장해 고아 정리가 오폭한다.
+  또한 고아 삭제 전 형제 CLAUDE.md 실존을 직접 확인한다(has_sibling_canonical) — 키 비교가
+  어떤 이유로든 어긋나도 살아 있는 쌍은 지우지 않는 최종 가드(2026-07-15 오삭제 사고 재발 방지).
 - 스킬 폴더는 정본을 그대로 미러링한다: 새/변경 파일은 복사, 정본에서 사라진 파일은 생성본에서도 정리.
   단 자격증명·캐시·OS 잡파일은 보안·청결을 위해 제외한다(아래 SKILL_EXCLUDE_*).
   스킬 트리는 파일 수가 많아 개별 발산 경고는 두지 않는다(정본 기준 무조건 미러링).
@@ -49,6 +53,7 @@ import json
 import os
 import shutil
 import sys
+import unicodedata
 from fnmatch import fnmatch
 from pathlib import Path
 
@@ -122,6 +127,29 @@ SKILLS_README = (
 
 
 # ── 공통 유틸 ────────────────────────────────────────────────────────────
+def norm_key(s: str) -> str:
+    """상태 파일·비교용 경로 키를 NFC 로 정규화한다.
+
+    상태 파일이 Google Drive 등으로 머신 간 동기화되는 환경에서, macOS 실행은
+    walk 가 NFD 파일명을 돌려줘 NFD 키를, Windows 는 NFC 키를 만든다. 정규화
+    없이는 같은 경로가 두 키로 갈라지고, 고아 정리가 NFD 구키를 고아로 오판한다.
+    결정타: Google Drive 파일시스템은 NFD 별형 경로도 NFC 실파일로 해석하므로,
+    살아 있는 AGENTS.md 가 구키 경유로 실제 삭제된다(2026-07-15 실사고, 18개 오삭제)."""
+    return unicodedata.normalize("NFC", s)
+
+
+def has_sibling_canonical(folder: Path) -> bool:
+    """폴더에 정본 CLAUDE.md(대소문자 무관)가 실존하는지 확인한다.
+    고아 정리의 최종 안전 가드: 키 비교가 어떤 이유로든 어긋나도
+    (정규화 차이·Drive 유령 경로 등) 살아 있는 쌍은 절대 지우지 않는다."""
+    try:
+        return any(
+            f.is_file() and f.name.lower() == "claude.md" for f in folder.iterdir()
+        )
+    except OSError:
+        return False
+
+
 def sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -155,9 +183,11 @@ def extract_body(generated_text: str) -> str:
 def load_state() -> dict:
     if STATE_FILE.exists():
         try:
-            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            raw = json.loads(STATE_FILE.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return {}
+        # 키를 NFC 로 정규화(norm_key docstring 참조). NFD/NFC 중복 키는 하나로 합쳐진다.
+        return {norm_key(k): v for k, v in raw.items()}
     return {}
 
 
@@ -279,7 +309,8 @@ def sync_docs(args, state) -> tuple[list[str], bool]:
     pairs: list[tuple[Path, Path, str]] = [(CANONICAL, ROOT / "AGENTS.md", "AGENTS.md")]
     for rel in iter_nested_canonicals():
         target_rel = rel.parent / "AGENTS.md"
-        pairs.append((ROOT / rel, ROOT / target_rel, target_rel.as_posix()))
+        # 파일 I/O 는 walk 가 준 원형 경로로, 상태 키만 NFC 로 통일한다.
+        pairs.append((ROOT / rel, ROOT / target_rel, norm_key(target_rel.as_posix())))
 
     managed = {key for _, _, key in pairs}
 
@@ -291,11 +322,17 @@ def sync_docs(args, state) -> tuple[list[str], bool]:
 
     # 고아 정리: 직전에 우리가 생성·관리하던 AGENTS.md 중 대응 CLAUDE.md 가 사라진 것.
     # 우리가 만든 생성물(배너 마커 포함)일 때만 안전하게 삭제한다(수동 파일은 건드리지 않음).
+    # 삭제 전 형제 CLAUDE.md 실존을 직접 확인한다 — 키 비교(managed)가 정규화 차이나
+    # Drive 유령 경로로 어긋나도, 살아 있는 쌍은 절대 지우지 않는 최종 가드.
     for key in [k for k in state if k == "AGENTS.md" or k.endswith("/AGENTS.md")]:
         if key in managed:
             continue
         orphan = ROOT / key
-        if orphan.exists() and BODY_MARKER in read_text(orphan):
+        if (
+            orphan.exists()
+            and not has_sibling_canonical(orphan.parent)
+            and BODY_MARKER in read_text(orphan)
+        ):
             print(f"[정리] {key} (대응 CLAUDE.md 없음 → 생성물 삭제)")
             if not args.check:
                 orphan.unlink()
