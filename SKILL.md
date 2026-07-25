@@ -7,6 +7,8 @@ description: >-
   "AGENTS.md 만들어 줘", "멀티 에이전트 호환 셋업", "CLAUDE.md를 범용 에이전트용으로 확장",
   "에이전트 중립 지침 동기화", "agent-docs-sync 실행". make this project work with Codex/Antigravity,
   generate AGENTS.md from CLAUDE.md, mirror skills to .agents, agent-neutral docs sync.
+metadata:
+  version: "1.0.0"
 ---
 
 # agent-docs-sync — 멀티 에이전트 호환 지침·스킬 동기화
