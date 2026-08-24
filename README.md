@@ -28,6 +28,23 @@ python sync_agent_docs.py --force    # 발산 경고를 무시하고 발산 파�
 
 신규 프로젝트 셋업 워크플로우(호환 블록 삽입, 스킬 색인 생성, 검증 등)와 발산 처리·보안 정책은 [`SKILL.md`](SKILL.md)에 정리돼 있다.
 
+## 사용자 레벨: Antigravity CLI 글로벌 스킬
+
+위가 프로젝트 레벨이라면, `scripts/sync_agy_skills.py`는 홈 디렉터리의 개인 스킬을 Antigravity CLI(`agy`)에 노출한다.
+
+```bash
+python scripts/sync_agy_skills.py --init      # allowlist 템플릿 생성 (~/.gemini/agy-skills.txt)
+python scripts/sync_agy_skills.py --check     # 드라이런
+python scripts/sync_agy_skills.py             # 반영
+```
+
+`~/.claude/skills/<name>` 을 realpath 로 해석해 `~/.gemini/config/skills/<name>` 으로 반영한다. 실측으로 확정된 두 가지 때문에 별도 스크립트가 필요하다.
+
+- **agy 의 글로벌 스킬 루트는 `~/.gemini/config/skills` 다.** `~/.agents/skills` 가 아니다. 후자는 agy 에게 워크스페이스 루트일 뿐이라, 거기에 스킬을 넣어도 agy 는 보지 못한다(그쪽은 Codex 의 루트다).
+- **링크 추종이 OS 마다 다르다.** Windows 의 agy 는 junction 을 따라가지 않아 물리 복사가 필요하고, macOS 의 agy 는 symlink 를 따라가므로 링크로 충분하다. 스크립트가 알아서 갈라 처리한다. Windows 에서는 정본을 고칠 때마다 다시 실행해야 한다.
+
+노출할 스킬은 `~/.gemini/agy-skills.txt` 에 한 줄씩 적는다. 목록에서 빠진 항목은 agy 루트에서 정리되며 정본은 건드리지 않는다. 자세한 배경과 카나리 진단법은 [`SKILL.md`](SKILL.md) 의 "사용자 레벨" 절 참조.
+
 ## 보안
 
 스킬 미러링은 자격증명·캐시·OS 잡파일을 의도적으로 제외한다(`credentials/`·`accounts.json`·`*token*.json`·`client_secret*.json`·`*.key`·`*.pem`·`__pycache__` 등). 단 `CLAUDE.md` 본문에 비밀을 인라인으로 적으면 전문 복제물인 `AGENTS.md`에도 그대로 들어가므로, 키는 환경변수/별도 설정 파일로 분리할 것을 권한다.

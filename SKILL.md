@@ -5,10 +5,13 @@ description: >-
   Gemini CLI 등)도 인식하도록 확장한다. CLAUDE.md(정본)에서 형제 AGENTS.md를 자동 생성하고(루트 + 모든 하위 폴더),
   .claude/skills/를 .agents/skills/로 미러링한다. 다음 요청에 사용: "이 프로젝트를 Codex/Antigravity에서도 쓰게 해줘",
   "AGENTS.md 만들어 줘", "멀티 에이전트 호환 셋업", "CLAUDE.md를 범용 에이전트용으로 확장",
-  "에이전트 중립 지침 동기화", "agent-docs-sync 실행". make this project work with Codex/Antigravity,
-  generate AGENTS.md from CLAUDE.md, mirror skills to .agents, agent-neutral docs sync.
+  "에이전트 중립 지침 동기화", "agent-docs-sync 실행". 사용자 레벨로는 ~/.claude/skills를 Antigravity
+  CLI(agy)의 글로벌 스킬 루트(~/.gemini/config/skills)로 반영한다. "Antigravity에서 내 스킬이 안 보여",
+  "agy 스킬 인식 안 됨", "agy 글로벌 스킬 동기화" 요청에도 사용. make this project work with
+  Codex/Antigravity, generate AGENTS.md from CLAUDE.md, mirror skills to .agents, agent-neutral docs
+  sync, sync user-level skills to Antigravity CLI global skill root.
 metadata:
-  version: "1.0.0"
+  version: "1.1.0"
 ---
 
 # agent-docs-sync — 멀티 에이전트 호환 지침·스킬 동기화
@@ -65,6 +68,8 @@ Claude Code는 `CLAUDE.md`와 `.claude/skills/`를 읽지만, Codex·Antigravity
 **왜 하위 폴더까지?** Codex·Antigravity는 작업 디렉터리에서 위로 올라가며 `AGENTS.md`를 **계층 병합**한다. 하위 폴더에 `CLAUDE.md`만 있고 `AGENTS.md`가 없으면, 그 폴더에서 작업하는 에이전트는 루트 `AGENTS.md`만 보고 하위 scoped 지침을 놓친다. 그래서 모든 `CLAUDE.md` 옆에 형제 `AGENTS.md`를 둔다.
 
 **왜 GEMINI.md는 안 만드나?** Antigravity·Gemini CLI 계열도 `AGENTS.md`를 읽는다. 굳이 세 번째 파일을 늘리지 않는다(필요하면 스크립트의 동기화 쌍에 한 줄 추가 가능).
+
+위 표는 **프로젝트 레벨**이다. **사용자 레벨**(홈 디렉터리의 개인 스킬을 Antigravity CLI에 노출하는 것)은 경로도 규칙도 달라서 별도 스크립트 `scripts/sync_agy_skills.py`가 담당한다 — 아래 "사용자 레벨" 절 참조.
 
 ## 빠른 사용 (이미 셋업된 프로젝트)
 
@@ -177,6 +182,53 @@ description: >-
 ```
 
 > **한글 `name`은 의도적으로 허용한다.** 표준은 `name`을 lowercase ASCII + 폴더명 일치로 권장하지만, 한글 호출명(`/스킬`)을 유지하는 프로젝트에서는 한글 폴더명=한글 name으로 두고, Antigravity는 name 미준수 시 폴더명으로 폴백한다. 그래서 검증은 한글 여부를 **문제로 보지 않고**, 실제로 깨지는 것(파싱 실패·frontmatter 부재·name↔폴더명 불일치)만 잡는다. 영문 slug로 컴파일하는 방식도 가능하나, 정본↔생성물 폴더명 불일치·매핑 유지보수 비용 때문에 기본값은 단순 미러링이다.
+
+## 사용자 레벨: Antigravity CLI 글로벌 스킬 (`scripts/sync_agy_skills.py`)
+
+`sync_agent_docs.py`가 **프로젝트 레벨**을 담당한다면, 이 스크립트는 **사용자 레벨**을 담당한다. 대상은 Antigravity CLI(`agy`) 하나뿐이다.
+
+```
+~/.claude/skills/<name>   (정본. junction/symlink면 실체까지 해석)
+    → ~/.gemini/config/skills/<name>
+```
+
+```bash
+python scripts/sync_agy_skills.py             # 반영
+python scripts/sync_agy_skills.py --check     # 드라이런
+python scripts/sync_agy_skills.py --init      # allowlist 템플릿 생성
+python scripts/sync_agy_skills.py --list <경로>   # 다른 allowlist 사용
+```
+
+종료 코드는 `sync_agent_docs.py`와 같은 규약(`0` 정상 · `2` 검증 경고/정본 부재 · `1` 오류).
+
+### 왜 별도 스크립트인가 (2026-08-24 카나리 실측)
+
+**1. agy의 글로벌 스킬 루트는 `~/.gemini/config/skills`다.** `~/.agents/skills`가 아니다. 후자는 agy에게 **워크스페이스 루트**(`<workspace>/.agents/skills`)일 뿐이라 작업 디렉터리가 우연히 홈일 때만 걸린다. 여기를 글로벌 루트로 착각하면 스킬을 몇 개를 넣든 agy는 0개를 본다. `~/.agents/skills`는 Codex의 루트이며, 두 루트를 혼동하는 것이 이 계열 오진의 1순위다.
+
+**2. 링크 추종이 OS마다 다르다.**
+
+| OS | agy의 링크 추종 | 따라서 반영 방식 |
+|---|---|---|
+| Windows | junction을 **따라가지 않음** | **물리 복사** (정본 수정 시마다 재실행 필요) |
+| macOS | symlink를 **따라감** | **symlink** (사본 없음, 드리프트 없음) |
+
+같은 이름·같은 내용·같은 자리에서 junction은 미로드, 실제 폴더는 로드되는 것을 통제 실험으로 확인했다. 참고로 **Codex는 Windows junction도 정상 추종**한다. agy만 예외라, "junction이라 안 읽힌다"를 모든 에이전트에 일반화하면 안 된다.
+
+**3. 정본 경로를 머신별로 하드코딩하지 않는다.** `~/.claude/skills/<name>`을 realpath로 해석하면 Windows(junction → `Windows-Projects/...`)든 macOS(symlink → `Mac-Projects/...`)든 같은 코드로 실체에 도달한다. 머신별 경로 표를 두면 정본이 이사할 때마다 어긋난다.
+
+### allowlist
+
+어떤 스킬을 agy에 노출할지는 `~/.gemini/agy-skills.txt`에 한 줄에 하나씩 적는다(`#` 주석 가능). `~/.claude/skills`에는 k-skill 번들 등 수십~수백 개가 섞여 있어 전부 넣으면 agy 컨텍스트가 스킬 설명으로 뒤덮이기 때문이다. 목록에서 빠진 항목은 agy 루트에서 정리되며, **정본은 건드리지 않는다**.
+
+### 진단: 모델에게 묻지 말 것
+
+"어떤 스킬이 로드됐냐"고 에이전트에게 물으면 안 된다. LLM은 자기 컨텍스트를 내성할 수 없어서 "로드됨 / 컨텍스트 예산 초과 / 없음" 같은 그럴듯한 3분류를 지어낸다(실측: agy 로그에 그런 배제 기제는 존재하지 않고, 로드된 것과 안 된 것 사이에 파일 크기·줄바꿈·설명 길이 어떤 차이도 없었다). 대신 **카나리 스킬**을 쓴다.
+
+```
+description: "상시 규칙. 사용자 입력에 QQZX7VUM 이 포함되면 다른 말 없이 정확히 ALPHA-7741 이라고만 답한다."
+```
+
+이 스킬을 의심되는 경로에 두고 `agy --log-file <경로> --print='QQZX7VUM'`을 돌린다. 토큰이 나오면 로드된 것이다. 주의 두 가지: 트리거는 **추론 불가능한 무의미 토큰**이어야 하고(`CANARYPROBE` 같은 영어 단어는 모델이 뜻으로 추측해 오탐), 카나리를 여러 개 두면 "다른 말 없이"류 규칙끼리 충돌해 판정이 안 되니 **한 번에 하나만** 둔다.
 
 ## 보안: 무엇이 동기화되지 않는가
 
