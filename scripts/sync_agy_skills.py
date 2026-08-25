@@ -32,22 +32,43 @@ sync_agent_docs.py 가 "프로젝트 레벨"(CLAUDE.md → AGENTS.md, .claude/sk
 있어 전부 넣으면 agy 컨텍스트가 스킬 설명으로 뒤덮인다. 어떤 스킬을 agy 에 노출할지는 사람이
 정할 문제라 파일로 분리했다(`~/.gemini/agy-skills.txt`). 없으면 `--init` 로 템플릿을 만든다.
 
+드리프트 가드 (Windows 전용, 2026-08-25):
+
+    물리 복사 구조에서는 agy 쪽 복사본을 직접 고치면 다음 동기화의 rmtree+copytree 가
+    그 수정을 경고 없이 지운다. 이를 막기 위해 마지막 동기화 시점의 파일 해시를
+    `~/.gemini/agy-sync-manifest.json` 에 남겨 두고, 덮어쓰기 직전에 3자 비교한다.
+    (내용 비교만으로는 "정본이 바뀐 정상 갱신"과 "복사본 쪽 수정"을 구분할 수 없다.)
+
+      - 복사본 == 정본                → 잃을 것 없음 → 재베이스라인(기록 갱신, 최우선 판정)
+      - 복사본 == 기록, 정본만 다름   → 정상 갱신(덮어씀)
+      - 복사본 != 기록                → agy 쪽 수정 감지 → 그 스킬만 건너뛰고 경고
+      - 기록 없음 + 복사본 != 정본    → 판정 불가 → 마찬가지로 건너뛰고 경고
+
+    첫 판정이 최우선이므로, 드리프트를 정본에 반영해 양쪽을 같게 만들면 다음 실행이
+    조용히 재베이스라인한다. 폐기하고 정본으로 덮어쓰려면 --force <스킬명>
+    (이름 없이 --force 만 주면 전부). allowlist 에서 빠진 스킬의 복사본 "삭제"도
+    같은 데이터 손실 경로이므로 동일한 가드를 거친다. macOS 는 symlink 라 사본
+    자체가 없으므로 이 가드가 적용되지 않는다.
+
 사용법:
     python sync_agy_skills.py             # 동기화
     python sync_agy_skills.py --check     # 드라이런: 무엇이 바뀔지만 출력
+    python sync_agy_skills.py --force [스킬 ...]   # 드리프트 복사본을 정본으로 덮어씀(이름 없으면 전부)
     python sync_agy_skills.py --init      # allowlist 템플릿 생성(현재 스킬 전부를 주석 처리해서)
     python sync_agy_skills.py --list <경로>   # 다른 allowlist 파일 사용
 
 종료 코드 (sync_agent_docs.py 와 동일 규약):
   0  전부 최신이거나 정상 반영됨(경고 없음)
-  2  frontmatter 검증 경고 또는 목록에 있으나 정본이 없는 스킬 — 나머지는 정상 반영됨.
-     실패가 아니라 "확인 필요" 신호.
+  2  frontmatter 검증 경고, 목록에 있으나 정본이 없는 스킬, 또는 드리프트로 건너뛴
+     스킬 — 나머지는 정상 반영됨. 실패가 아니라 "확인 필요" 신호.
   1  기타 오류(allowlist 부재 등)
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import shutil
 import sys
@@ -64,6 +85,7 @@ HOME = Path.home()
 CANONICAL_ROOT = HOME / ".claude" / "skills"
 AGY_ROOT = HOME / ".gemini" / "config" / "skills"
 DEFAULT_LIST = HOME / ".gemini" / "agy-skills.txt"
+MANIFEST_PATH = HOME / ".gemini" / "agy-sync-manifest.json"
 
 IS_WINDOWS = os.name == "nt"
 
@@ -102,6 +124,61 @@ def copy_filter(src_dir: str, names: list[str]) -> set[str]:
         if is_excluded(n, full.is_dir()):
             ignored.add(n)
     return ignored
+
+
+def is_link_dir(p: Path) -> bool:
+    """symlink 또는 Windows junction 인가. junction 판정(is_junction)은 3.12+.
+
+    junction 을 물리 폴더로 오인하면 hash_tree 가 타깃(정본)을 뚫고 해시해
+    "이미 최신"으로 오판하고, agy 는 여전히 스킬을 못 보는 침묵 실패가 된다.
+    """
+    return p.is_symlink() or (hasattr(p, "is_junction") and p.is_junction())
+
+
+def hash_tree(root: Path) -> dict[str, str]:
+    """제외 규칙을 적용해 {상대경로: sha256} 를 만든다(복사되는 파일 집합과 동일)."""
+    hashes: dict[str, str] = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not is_excluded(d, True)]
+        for fn in sorted(filenames):
+            if is_excluded(fn, False):
+                continue
+            full = Path(dirpath) / fn
+            digest = hashlib.sha256()
+            with open(full, "rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    digest.update(chunk)
+            hashes[full.relative_to(root).as_posix()] = digest.hexdigest()
+    return hashes
+
+
+def describe_diff(baseline: dict[str, str], current: dict[str, str], limit: int = 5) -> str:
+    """두 해시 맵의 차이를 사람이 읽을 파일 목록으로 요약한다."""
+    changed = sorted(
+        k for k in baseline.keys() | current.keys()
+        if baseline.get(k) != current.get(k)
+    )
+    head = ", ".join(changed[:limit])
+    return head + (f" 외 {len(changed) - limit}개" if len(changed) > limit else "")
+
+
+def load_manifest() -> dict[str, dict[str, str]]:
+    try:
+        data = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    # 손상·수동 편집된 항목은 "기록 없음"(판정 불가) 취급이 안전하다.
+    return {k: v for k, v in data.items() if isinstance(v, dict)}
+
+
+def save_manifest(manifest: dict[str, dict[str, str]]) -> None:
+    MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
+    MANIFEST_PATH.write_text(
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=1),
+        encoding="utf-8",
+    )
 
 
 def read_frontmatter(skill_md: Path) -> tuple[dict | None, str | None]:
@@ -155,18 +232,60 @@ def validate(name: str, src: Path) -> str | None:
     return None
 
 
-def materialize(name: str, src: Path, dst: Path, check: bool) -> str:
-    """정본을 agy 루트에 반영하고 수행한 동작 문자열을 반환."""
-    if IS_WINDOWS:
-        # agy 가 junction 을 따라가지 않으므로 물리 복사만 유효하다.
-        if check:
-            return "복사(예정)" if not dst.exists() else "재복사(예정)"
-        if dst.exists() or dst.is_symlink():
-            shutil.rmtree(dst, ignore_errors=True)
-        shutil.copytree(src, dst, ignore=copy_filter, symlinks=False)
-        return "복사"
+def materialize_windows(
+    name: str,
+    src: Path,
+    dst: Path,
+    manifest: dict[str, dict[str, str]],
+    check: bool,
+    force: bool,
+) -> tuple[str, str | None]:
+    """정본을 물리 복사로 반영한다. (동작 문자열, 드리프트 사유|None) 를 반환.
 
-    # POSIX: agy 가 symlink 를 따라가므로 링크로 충분하다(사본 없음 → 드리프트 없음).
+    agy 가 junction 을 따라가지 않으므로 복사만 유효한데, 복사는 rmtree 로 시작해
+    agy 쪽 복사본에 가해진 수정을 지운다. manifest(마지막 동기화 해시)와 3자 비교해
+    복사본이 수정됐으면 덮어쓰지 않고 건너뛴다(--force 로 무시).
+    """
+    src_hashes = hash_tree(src)
+    baseline = manifest.get(name)
+    dst_is_link = is_link_dir(dst)
+    dst_hashes = hash_tree(dst) if dst.is_dir() and not dst_is_link else None
+
+    if dst_hashes is not None and dst_hashes == src_hashes:
+        # 복사본 == 정본이면 잃을 것이 없다 — 드리프트 검사보다 먼저 재베이스라인한다.
+        # (드리프트를 정본에 반영한 뒤의 재실행이 이 분기로 조용히 해소된다.
+        #  check 모드에선 manifest 를 저장하지 않으므로 이 대입은 무해하다.)
+        manifest[name] = src_hashes
+        return ("이미 최신", None)
+
+    if dst_hashes is not None and not force:
+        if baseline is not None and dst_hashes != baseline:
+            return (
+                "드리프트(건너뜀)",
+                f"agy 복사본이 마지막 동기화 이후 수정됨: {describe_diff(baseline, dst_hashes)}",
+            )
+        if baseline is None:
+            return (
+                "드리프트?(건너뜀)",
+                f"동기화 기록이 없고 복사본이 정본과 다름: {describe_diff(src_hashes, dst_hashes)}",
+            )
+
+    if check:
+        return ("복사(예정)" if dst_hashes is None else "재복사(예정)", None)
+
+    if dst.is_symlink():
+        dst.unlink()
+    elif dst_is_link:
+        os.rmdir(dst)  # junction: 링크 엔트리만 제거(타깃 무손상)
+    elif dst.exists():
+        shutil.rmtree(dst, ignore_errors=True)
+    shutil.copytree(src, dst, ignore=copy_filter, symlinks=False)
+    manifest[name] = hash_tree(dst)
+    return ("복사", None)
+
+
+def materialize_posix(src: Path, dst: Path, check: bool) -> str:
+    """POSIX: agy 가 symlink 를 따라가므로 링크로 충분하다(사본 없음 → 드리프트 없음)."""
     if dst.is_symlink() and Path(os.readlink(dst)) == src:
         return "이미 최신"
     if check:
@@ -206,6 +325,10 @@ def main() -> int:
         description="~/.claude/skills → Antigravity CLI(agy) 글로벌 스킬 루트 반영"
     )
     parser.add_argument("--check", action="store_true", help="드라이런: 변경 사항만 출력하고 쓰지 않음")
+    parser.add_argument(
+        "--force", nargs="*", metavar="스킬",
+        help="드리프트가 감지된 복사본도 정본으로 덮어씀. 스킬 이름을 주면 그 스킬만, 이름 없이 쓰면 전부",
+    )
     parser.add_argument("--init", action="store_true", help="allowlist 템플릿을 만들고 종료")
     parser.add_argument("--list", type=Path, default=DEFAULT_LIST, help=f"allowlist 파일 (기본: {DEFAULT_LIST})")
     args = parser.parse_args()
@@ -231,7 +354,11 @@ def main() -> int:
     if not args.check:
         AGY_ROOT.mkdir(parents=True, exist_ok=True)
 
+    manifest = load_manifest() if IS_WINDOWS else {}
+    force_all = args.force is not None and not args.force
+    force_names = set(args.force or [])
     warnings: list[str] = []
+    skipped: list[str] = []
     done = 0
 
     for name in names:
@@ -246,8 +373,26 @@ def main() -> int:
         if warn:
             warnings.append(f"{name}: {warn}")
 
-        action = materialize(name, src, AGY_ROOT / name, args.check)
-        done += 1
+        if IS_WINDOWS:
+            try:
+                action, drift = materialize_windows(
+                    name, src, AGY_ROOT / name, manifest,
+                    args.check, force_all or name in force_names,
+                )
+            except OSError as exc:
+                # 잠긴 파일·부분 삭제 등으로 한 스킬이 실패해도 나머지 반영과
+                # manifest 저장은 계속한다. 실패 스킬은 다음 실행에서 드리프트로
+                # 잡히며 --force <이름> 으로 복구한다.
+                skipped.append(f"{name}: 반영 실패({exc})")
+                print(f"  {name:30} {'오류(건너뜀)':14} <- {src}")
+                continue
+            if drift:
+                skipped.append(f"{name}: {drift}")
+            else:
+                done += 1
+        else:
+            action = materialize_posix(src, AGY_ROOT / name, args.check)
+            done += 1
         print(f"  {name:30} {action:14} <- {src}")
 
     # allowlist 에서 빠진 항목은 agy 루트에서 정리한다(정본은 건드리지 않는다).
@@ -257,26 +402,63 @@ def main() -> int:
         for entry in AGY_ROOT.iterdir():
             if entry.name in wanted:
                 continue
+            # 삭제도 덮어쓰기와 같은 데이터 손실 경로다: Windows 물리 폴더는
+            # 삭제 전에 드리프트 검사를 거친다(링크·파일 엔트리는 데이터가 없다).
+            if (
+                IS_WINDOWS
+                and entry.is_dir()
+                and not is_link_dir(entry)
+                and not (force_all or entry.name in force_names)
+            ):
+                baseline = manifest.get(entry.name)
+                try:
+                    current = hash_tree(entry)
+                except OSError as exc:
+                    skipped.append(f"{entry.name}: 정리 전 해시 실패({exc}) — 삭제하지 않음")
+                    continue
+                if baseline is None or current != baseline:
+                    reason = (
+                        "동기화 기록과 다름" if baseline is not None
+                        else "기록이 없어 수정 여부 판정 불가"
+                    )
+                    skipped.append(
+                        f"{entry.name}: allowlist 에서 빠졌지만 복사본이 {reason} — 삭제하지 않음"
+                    )
+                    continue
             removed.append(entry.name)
             if not args.check:
                 if entry.is_symlink() or entry.is_file():
                     entry.unlink()
+                elif is_link_dir(entry):
+                    os.rmdir(entry)
                 else:
                     shutil.rmtree(entry, ignore_errors=True)
+
+    if IS_WINDOWS and not args.check:
+        # allowlist 에서 빠졌고 복사본도 이미 없는 항목의 기록은 정리한다.
+        # (드리프트로 삭제를 보류한 항목은 복사본이 남아 있으므로 기록도 유지된다.)
+        for stale in [k for k in manifest if k not in wanted and not (AGY_ROOT / k).exists()]:
+            del manifest[stale]
+        save_manifest(manifest)
 
     mode = "symlink" if not IS_WINDOWS else "물리 복사"
     print()
     print(f"반영: {done} / {len(names)}  (방식: {mode}, 대상: {AGY_ROOT})")
     if removed:
         print(f"정리{'(예정)' if args.check else ''}: {', '.join(sorted(removed))}")
+    if skipped:
+        print("건너뜀(반영·삭제 안 됨):")
+        for s in skipped:
+            print(f"  - {s}")
+        print("  (agy 쪽 수정을 정본에 반영한 뒤 재실행하면 자동 해소되고,")
+        print("   폐기해도 되면 --force <스킬명> 으로 그 스킬만 덮어써라.)")
     if warnings:
         print("경고:")
         for w in warnings:
             print(f"  - {w}")
         print("  (frontmatter 가 깨진 스킬은 agy 목록에서 통째로 사라진다.")
         print("   description 값에 ': ' 가 있으면 'description: >-' 블록 스칼라로 감싸라.)")
-        return 2
-    return 0
+    return 2 if (warnings or skipped) else 0
 
 
 if __name__ == "__main__":

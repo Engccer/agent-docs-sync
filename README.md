@@ -36,12 +36,15 @@ python sync_agent_docs.py --force    # 발산 경고를 무시하고 발산 파�
 python scripts/sync_agy_skills.py --init      # allowlist 템플릿 생성 (~/.gemini/agy-skills.txt)
 python scripts/sync_agy_skills.py --check     # 드라이런
 python scripts/sync_agy_skills.py             # 반영
+python scripts/sync_agy_skills.py --force [스킬 ...]   # 드리프트 복사본을 정본으로 덮어씀(이름 없으면 전부)
 ```
 
 `~/.claude/skills/<name>` 을 realpath 로 해석해 `~/.gemini/config/skills/<name>` 으로 반영한다. 실측으로 확정된 두 가지 때문에 별도 스크립트가 필요하다.
 
 - **agy 의 글로벌 스킬 루트는 `~/.gemini/config/skills` 다.** `~/.agents/skills` 가 아니다. 후자는 agy 에게 워크스페이스 루트일 뿐이라, 거기에 스킬을 넣어도 agy 는 보지 못한다(그쪽은 Codex 의 루트다).
 - **링크 추종이 OS 마다 다르다.** Windows 의 agy 는 junction 을 따라가지 않아 물리 복사가 필요하고, macOS 의 agy 는 symlink 를 따라가므로 링크로 충분하다. 스크립트가 알아서 갈라 처리한다. Windows 에서는 정본을 고칠 때마다 다시 실행해야 한다.
+
+Windows 의 물리 복사에는 **드리프트 가드**가 붙어 있다: 마지막 동기화 해시를 `~/.gemini/agy-sync-manifest.json` 에 기록해 두고, agy 쪽 복사본이 그 이후 수정됐으면 덮어쓰지도 삭제하지도 않고 건너뛰며 경고한다(종료 2). 수정을 정본에 반영해 양쪽을 같게 만들면 다음 실행이 자동 재베이스라인하고, 폐기해도 되면 `--force <스킬명>` 으로 그 스킬만 덮어쓴다(이름 없으면 전부). 복사본은 빌드 산출물이며 수정은 정본에서만 하는 것이 원칙이고, 가드는 그 원칙이 깨졌을 때의 안전망이다.
 
 노출할 스킬은 `~/.gemini/agy-skills.txt` 에 한 줄씩 적는다. 목록에서 빠진 항목은 agy 루트에서 정리되며 정본은 건드리지 않는다. 자세한 배경과 카나리 진단법은 [`SKILL.md`](SKILL.md) 의 "사용자 레벨" 절 참조.
 
