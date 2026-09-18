@@ -141,13 +141,12 @@ def norm_key(s: str) -> str:
 def has_sibling_canonical(folder: Path) -> bool:
     """폴더에 정본 CLAUDE.md(대소문자 무관)가 실존하는지 확인한다.
     고아 정리의 최종 안전 가드: 키 비교가 어떤 이유로든 어긋나도
-    (정규화 차이·Drive 유령 경로 등) 살아 있는 쌍은 절대 지우지 않는다."""
-    try:
-        return any(
-            f.is_file() and f.name.lower() == "claude.md" for f in folder.iterdir()
-        )
-    except OSError:
-        return False
+    (정규화 차이·Drive 유령 경로 등) 살아 있는 쌍은 절대 지우지 않는다.
+    폴더를 읽지 못하면 OSError 를 그대로 던진다. False("없음 → 삭제 가능")로
+    삼키면 가드가 열린 채로 실패하므로, 호출부가 판정 보류로 처리한다."""
+    return any(
+        f.is_file() and f.name.lower() == "claude.md" for f in folder.iterdir()
+    )
 
 
 def sha256(text: str) -> str:
@@ -198,10 +197,16 @@ def save_state(state: dict) -> None:
 
 
 # ── 지침 파일 동기화 (CLAUDE.md → AGENTS.md, 루트 + 모든 하위 폴더) ─────────
-def iter_nested_canonicals() -> list[Path]:
-    """루트 CLAUDE.md 를 제외한 하위 폴더의 CLAUDE.md 상대경로 목록.
+def iter_nested_canonicals() -> tuple[list[Path], list[Path]]:
+    """루트 CLAUDE.md 를 제외한 하위 폴더의 CLAUDE.md 상대경로 목록과, walk 가
+    들어가지 못한 폴더의 상대경로 목록을 돌려준다.
     스킬 트리(.claude/.agents)·VCS·캐시 폴더는 walk 에서 가지치기한다.
     파일명 비교는 대소문자 무관(Windows 파일시스템 호환).
+
+    os.walk 는 기본값으로 열지 못한 폴더를 조용히 건너뛴다. 그러면 그 안의 살아 있는
+    CLAUDE.md 가 목록에서 빠지고 고아 정리가 그 AGENTS.md 를 고아로 오판하므로,
+    접근 불가 폴더를 따로 모아 고아 정리에서 제외시킨다. 실례: SSH 세션의
+    RedirectionGuard 가 클라우드 드라이브로 가는 junction 통과를 막는다(WinError 448).
 
     junction/symlink 로 ROOT 밖을 가리키는 폴더도 그대로 따라간다(의도적으로
     외부 폴더를 프로젝트에 link 해 함께 동기화하는 경우가 있으므로). 다만 그런
@@ -210,7 +215,21 @@ def iter_nested_canonicals() -> list[Path]:
     found: list[Path] = []
     external: list[tuple[Path, str]] = []
     seen_ext: set[str] = set()
-    for dirpath, dirnames, _filenames in os.walk(ROOT):
+    unreachable: list[Path] = []
+
+    def on_walk_error(err: OSError) -> None:
+        # 어느 폴더인지 모르면 ROOT(".") 로 기록해 고아 정리 전체를 보류시킨다.
+        try:
+            rel = Path(err.filename).relative_to(ROOT)
+        except (TypeError, ValueError):
+            rel = Path(".")
+        unreachable.append(rel)
+        print(
+            f"[접근 불가] {rel.as_posix()}/ 폴더를 열 수 없어 건너뜁니다: {err.strerror or err}",
+            file=sys.stderr,
+        )
+
+    for dirpath, dirnames, _filenames in os.walk(ROOT, onerror=on_walk_error):
         dirnames[:] = [d for d in dirnames if d not in DOC_EXCLUDE_DIRS]
         # Windows 에서 claude.md / CLAUDE.MD 등 대소문자 변형도 인식.
         actual = next((f for f in _filenames if f.lower() == "claude.md"), None)
@@ -236,7 +255,7 @@ def iter_nested_canonicals() -> list[Path]:
             "       이 경로의 AGENTS.md 는 프로젝트 트리 밖에 생성/갱신됩니다. 의도한 것인지 확인하세요"
             " (그 폴더가 자체 동기화를 갖는 별도 프로젝트라면 여기서 제외하는 게 좋습니다)."
         )
-    return sorted(found, key=lambda p: str(p).lower())
+    return sorted(found, key=lambda p: str(p).lower()), unreachable
 
 
 def _sync_doc_pair(canonical: Path, target: Path, state_key: str, state: dict, args) -> tuple[bool, bool]:
@@ -297,17 +316,27 @@ def _sync_doc_pair(canonical: Path, target: Path, state_key: str, state: dict, a
     return False, False
 
 
-def sync_docs(args, state) -> tuple[list[str], bool]:
-    """루트 + 모든 하위 폴더의 CLAUDE.md → 형제 AGENTS.md. 반환: (diverged_keys, any_written).
+def sync_docs(args, state) -> tuple[list[str], bool, list[str]]:
+    """루트 + 모든 하위 폴더의 CLAUDE.md → 형제 AGENTS.md.
+    반환: (diverged_keys, any_written, skipped_paths).
 
     diverged_keys: 발산으로 "건너뛴" AGENTS.md 상태키 목록(있어도 나머지는 모두 동기화됨).
+    skipped_paths: 접근 불가로 건너뛴 폴더·고아 후보(상태키는 보존해 다음 실행에 넘긴다).
     루트 상태키는 하위 호환을 위해 그대로 "AGENTS.md", 하위는 POSIX 상대경로를 쓴다."""
     diverged_keys: list[str] = []
+    skipped: list[str] = []
     any_written = False
+
+    nested, unreachable = iter_nested_canonicals()
+    skipped.extend(f"{rel.as_posix()}/" for rel in unreachable)
+    # ROOT 자체(".")를 못 열었으면 빈 접두어 = 모든 키 판정 보류.
+    unreachable_prefixes = [
+        "" if rel == Path(".") else norm_key(rel.as_posix()) + "/" for rel in unreachable
+    ]
 
     # 동기화 대상 쌍: (정본 CLAUDE.md, 생성 AGENTS.md, 상태키).
     pairs: list[tuple[Path, Path, str]] = [(CANONICAL, ROOT / "AGENTS.md", "AGENTS.md")]
-    for rel in iter_nested_canonicals():
+    for rel in nested:
         target_rel = rel.parent / "AGENTS.md"
         # 파일 I/O 는 walk 가 준 원형 경로로, 상태 키만 NFC 로 통일한다.
         pairs.append((ROOT / rel, ROOT / target_rel, norm_key(target_rel.as_posix())))
@@ -327,20 +356,29 @@ def sync_docs(args, state) -> tuple[list[str], bool]:
     for key in [k for k in state if k == "AGENTS.md" or k.endswith("/AGENTS.md")]:
         if key in managed:
             continue
+        # walk 가 못 들어간 폴더 안이면 CLAUDE.md 가 살아 있는지 알 수 없다 → 판정 보류.
+        if any(key.startswith(p) for p in unreachable_prefixes):
+            continue
         orphan = ROOT / key
-        if (
-            orphan.exists()
-            and not has_sibling_canonical(orphan.parent)
-            and BODY_MARKER in read_text(orphan)
-        ):
-            print(f"[정리] {key} (대응 CLAUDE.md 없음 → 생성물 삭제)")
-            if not args.check:
-                orphan.unlink()
-                any_written = True
+        try:
+            if (
+                orphan.exists()
+                and not has_sibling_canonical(orphan.parent)
+                and BODY_MARKER in read_text(orphan)
+            ):
+                print(f"[정리] {key} (대응 CLAUDE.md 없음 → 생성물 삭제)")
+                if not args.check:
+                    orphan.unlink()
+                    any_written = True
+        except OSError as e:
+            # 한 경로가 막혀도 나머지 정리는 계속한다. 상태키는 남겨 다음 실행에서 재판정.
+            print(f"[접근 불가] {key} 고아 판정을 건너뜁니다: {e.strerror or e}", file=sys.stderr)
+            skipped.append(key)
+            continue
         if not args.check:
             del state[key]
 
-    return diverged_keys, any_written
+    return diverged_keys, any_written, skipped
 
 
 # ── 스킬 폴더 동기화 (.claude/skills/ → .agents/skills/) ──────────────────
@@ -540,7 +578,7 @@ def main() -> int:
         return 1
 
     state = load_state()
-    diverged_keys, docs_written = sync_docs(args, state)
+    diverged_keys, docs_written, skipped_paths = sync_docs(args, state)
     skills_written = sync_skills(args)
 
     if (docs_written or skills_written) and not args.check:
@@ -563,6 +601,13 @@ def main() -> int:
             file=sys.stderr,
         )
 
+    if skipped_paths:
+        print(
+            f"\n[요약] 접근 불가로 건너뛴 경로 {len(skipped_paths)}개: "
+            + ", ".join(skipped_paths)
+            + "\n        ↳ 나머지는 정상 동기화됨(종료 코드 2 = 확인 필요, 실패 아님). 상태 기록은 보존했습니다."
+            + "\n        ↳ SSH 세션 등에서 junction 통과가 막힌 경우라면 로컬 세션에서 다시 실행하세요."
+        )
     if diverged_keys:
         # 발산은 "부분 성공" — 건너뛴 파일만 빼고 나머지는 모두 반영됐다. 전체가 멈춘 게 아님을 명시한다.
         print(
@@ -578,6 +623,8 @@ def main() -> int:
             f"\n[요약] 스킬 검증 경고 {len(skill_problems)}건 — 문서·스킬 동기화 자체는 정상 완료됨"
             "(종료 코드 2 = 확인 필요, 실패 아님)."
         )
+        return 2
+    if skipped_paths:
         return 2
     if args.check:
         print("\n(--check 모드: 실제로 쓰지 않았습니다.)")

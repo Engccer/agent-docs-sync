@@ -48,6 +48,87 @@ class Args:
     force = False
 
 
+def test_unreachable_folder() -> list[str]:
+    """T5·T6 — 접근 불가 경로 (2026-09-19 실사고).
+
+    SSH 세션의 RedirectionGuard 가 클라우드 드라이브로 가는 junction 통과를 막자(WinError 448),
+    os.walk 가 그 폴더를 조용히 건너뛰어 살아 있는 쌍이 고아 후보가 됐고, 고아 판정의
+    exists() 가 OSError 를 던져 실행 전체가 멈췄다.
+
+      T5  walk 가 못 들어간 폴더의 AGENTS.md 는 고아로 판정하지 않고 상태키를 보존한다
+          (폴더 목록만 막히고 파일 stat 은 되는 경우: 접두어 보류가 유일한 방어선)
+      T6  고아 후보 판정 중 OSError 가 나도 멈추지 않고 나머지 고아는 계속 정리한다
+    """
+    failures = []
+    real_scandir = os.scandir
+    real_listdir = os.listdir
+    real_exists = Path.exists
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "CLAUDE.md").write_text("# 루트\n", encoding="utf-8")
+        mod = load_module(root)
+        blocked = root / "막힌폴더"
+        blocked.mkdir()
+        (blocked / "CLAUDE.md").write_text("# 막힌 정본\n", encoding="utf-8")
+        (blocked / "AGENTS.md").write_text(mod.BANNER + "# 막힌 정본\n", encoding="utf-8")
+        gone = root / "사라진폴더"
+        gone.mkdir()
+        (gone / "AGENTS.md").write_text(mod.BANNER + "# 옛 정본\n", encoding="utf-8")
+        stuck = root / "판정불가"
+        stuck.mkdir()
+        blocked_key = "막힌폴더/AGENTS.md"
+        stuck_key = "판정불가/없는하위/AGENTS.md"
+        state = {
+            "AGENTS.md": mod.sha256("# 루트\n"),
+            blocked_key: mod.sha256("# 막힌 정본\n"),
+            stuck_key: mod.sha256("x"),  # 진짜 고아보다 앞에 둬 "막힌 뒤에도 계속"을 검증
+            "사라진폴더/AGENTS.md": mod.sha256("# 옛 정본\n"),
+        }
+
+        def fake_scandir(path="."):
+            if Path(path) == blocked:
+                raise OSError(22, "신뢰할 수 없는 탑재 지점", str(path))
+            return real_scandir(path)
+
+        def fake_listdir(path="."):
+            if Path(path) == blocked:
+                raise OSError(22, "신뢰할 수 없는 탑재 지점", str(path))
+            return real_listdir(path)
+
+        def fake_exists(self, *a, **kw):
+            if stuck in self.parents:
+                raise OSError(22, "신뢰할 수 없는 탑재 지점", str(self))
+            return real_exists(self, *a, **kw)
+
+        os.scandir = fake_scandir
+        os.listdir = fake_listdir
+        Path.exists = fake_exists
+        try:
+            _, _, skipped = mod.sync_docs(Args(), state)
+        except OSError as e:
+            return [f"T5/T6 실패: 접근 불가 경로에서 sync_docs 가 멈춤: {e!r}"]
+        finally:
+            os.scandir = real_scandir
+            os.listdir = real_listdir
+            Path.exists = real_exists
+
+        # T5
+        if not (blocked / "AGENTS.md").exists():
+            failures.append("T5 실패: 접근 불가 폴더의 AGENTS.md가 삭제됨")
+        if blocked_key not in state:
+            failures.append("T5 실패: 접근 불가 폴더의 상태키가 지워짐")
+        if "막힌폴더/" not in skipped:
+            failures.append(f"T5 실패: 접근 불가 폴더가 건너뜀 목록에 없음: {skipped!r}")
+        if blocked_key in skipped:
+            failures.append("T5 실패: 접근 불가 폴더 안의 키가 폴더 단위 보류 없이 개별 판정됨")
+        # T6
+        if stuck_key not in state or stuck_key not in skipped:
+            failures.append("T6 실패: 판정 불가 고아 후보의 상태키가 보존·보고되지 않음")
+        if (gone / "AGENTS.md").exists():
+            failures.append("T6 실패: 막힌 경로 뒤의 진짜 고아가 정리되지 않음")
+    return failures
+
+
 def main() -> int:
     failures = []
     with tempfile.TemporaryDirectory() as td:
@@ -113,6 +194,8 @@ def main() -> int:
         mod.sync_docs(Args(), state2)
         if (subdir / "AGENTS.md").exists():
             failures.append("T4 실패: 진짜 고아 AGENTS.md가 정리되지 않음")
+
+    failures += test_unreachable_folder()
 
     if failures:
         print("\n".join(failures))
