@@ -9,7 +9,7 @@
 - **Windows junction**: 따라간다. junction이 **ROOT(프로젝트 루트) 밖**(다른 드라이브·Google Drive 동기화 폴더 등)을 가리키면, 그 안의 `CLAUDE.md`를 정본으로 보고 **프로젝트 트리 밖에 `AGENTS.md`를 생성/갱신**한다.
 - **symlink 폴더**(macOS·Linux, Windows 디렉터리 symlink): 따라가지 않는다. 그 안의 `CLAUDE.md`는 경고 없이 동기화 대상에서 빠지고 종료 코드도 `0`이다. 그 폴더도 동기화하려면 링크 너머 실제 폴더를 프로젝트로 보고 거기에 따로 셋업한다.
 
-junction 외부 쓰기는 막지 않는다(외부 폴더를 일부러 link 해 함께 동기화하려는 경우가 있으므로). 대신 **가시화**한다: 실행 시 해당 경로에 `[외부] … 는 junction/symlink 로 ROOT 밖을 가리킵니다 → <실제 경로>` 경고를 출력한다(종료 코드는 바꾸지 않으므로 매번 동기화해도 노이즈가 되지 않는다). 이 경고가 보이면 판단한다:
+junction 외부 쓰기는 막지 않는다(외부 폴더를 일부러 link 해 함께 동기화하려는 경우가 있으므로). 대신 **가시화**한다: 실행 시 해당 경로에 `[외부] … 는 junction 으로 ROOT 밖을 가리킵니다 → <실제 경로>` 경고를 출력한다(종료 코드는 바꾸지 않으므로 매번 동기화해도 노이즈가 되지 않는다). 이 경고가 보이면 판단한다:
 - **의도한 동기화면** 그대로 둔다.
 - **그 link 너머가 자체 `sync_agent_docs.py`를 갖는 별도 프로젝트면**, 두 동기화가 같은 파일을 건드려 충돌·중복이 난다 → 그 폴더명을 루트 사본의 `DOC_EXCLUDE_DIRS`에 추가하거나 link를 정리해 제외한다. `DOC_EXCLUDE_DIRS`는 이름으로만 비교하므로 트리 어디에 있든 같은 이름의 폴더가 모두 빠진다. 사본을 새 판으로 바꿀 때 이 추가분을 옮겨 넣는다(SKILL.md "빠른 사용"의 사본 갱신).
 
@@ -21,7 +21,7 @@ walk 가 열지 못한 폴더(예: SSH 세션에서 RedirectionGuard 가 클라�
 
 ## 머신 간 동기화 폴더(NFC/NFD) 주의
 
-프로젝트 루트가 Google Drive 같은 **머신 간 동기화 폴더**면 `.agent-docs-sync.json`도 함께 동기화된다. macOS 는 파일명을 NFD 로, Windows 는 NFC 로 돌려주므로, 같은 한글 경로가 머신마다 다른 상태 키로 저장된다. 게다가 Google Drive 파일시스템은 NFD 별형 경로도 NFC 실파일로 해석하기 때문에, 구버전 스크립트에서는 고아 정리가 NFD 구키를 "대응 CLAUDE.md 없음"으로 오판하고 **살아 있는 `AGENTS.md` 를 별형 경로 경유로 실제 삭제**했다(증상 시그니처: ASCII 경로만 `[최신]`, 한글 경로는 전부 `[갱신]` 직후 `[정리]`). → 사례
+프로젝트 루트가 Google Drive 같은 **머신 간 동기화 폴더**면 `.agent-docs-sync.json`도 함께 동기화된다. macOS 는 파일명을 NFD 로, Windows 는 NFC 로 돌려주므로, 같은 한글 경로가 머신마다 다른 상태 키로 저장된다. 게다가 Google Drive 파일시스템은 NFD 별형 경로도 NFC 실파일로 해석하기 때문에, 구버전 스크립트에서는 고아 정리가 NFD 구키를 "대응 CLAUDE.md 없음"으로 오판하고 **살아 있는 `AGENTS.md` 를 별형 경로 경유로 실제 삭제**했다(증상 시그니처: ASCII 경로만 `[최신]`, 한글 경로는 전부 `[갱신]` 직후 `[정리]`). → 사례(`references/cases.md`)
 
 현재 스크립트는 두 겹으로 방어한다: ① 상태 키를 읽고 쓸 때 항상 NFC 정규화(`norm_key`), ② 고아 삭제 전 형제 `CLAUDE.md` 실존을 직접 확인(`has_sibling_canonical`). **배포본이 이 방어를 갖췄는지가 중요하다** — Drive 류 동기화 폴더에 구버전 사본이 남아 있으면 같은 사고가 재발하므로, 그런 프로젝트를 만나면 사본을 정본 스크립트로 갱신한다. 회귀 테스트: `python "<이 스킬 경로>/tests/test_sync_agent_docs.py"`.
 
@@ -37,7 +37,7 @@ walk 가 열지 못한 폴더(예: SSH 세션에서 RedirectionGuard 가 클라�
 - `name`이 폴더명과 불일치 (표준은 일치 요구)
 - `description` 비어 있음 또는 1024자 초과
 
-PyYAML이 없으면 휴리스틱 폴백이 frontmatter 부재·닫는 `---` 누락·최상위 plain scalar 값의 `: `·`name` 불일치만 잡는다. block scalar `description`의 빈 값·길이 초과와 그 밖의 YAML 오류는 폴백에서 걸리지 않는다.
+PyYAML이 없으면 휴리스틱 폴백이 돈다. 폴백은 block scalar `description`의 빈 값·길이 초과와, 최상위 plain scalar 값의 `: ` 말고 다른 YAML 오류(닫히지 않은 괄호 등)는 잡지 못한다.
 
 **해법(=작성 규칙).** `description`에 콜론·따옴표 등이 들어갈 수 있으므로 **항상 block scalar(`>-`)로 감싼다**:
 

@@ -69,7 +69,7 @@ ROOT = Path(__file__).resolve().parent
 CANONICAL = ROOT / "CLAUDE.md"   # 루트 정본
 STATE_FILE = ROOT / ".agent-docs-sync.json"
 
-# walk 가 junction/symlink 를 따라 ROOT 밖으로 나갔는지 판정하기 위한 기준 경로.
+# walk 가 junction 을 따라 ROOT 밖으로 나갔는지(symlink 폴더는 따라가지 않는다) 판정하기 위한 기준 경로.
 # (.resolve() 로 ROOT 는 이미 symlink 해소된 절대경로이며, 대소문자 무관 비교를 위해 normcase.)
 ROOT_REAL = os.path.normcase(str(ROOT))
 
@@ -94,7 +94,7 @@ BANNER = (
 SKILLS_SRC = ROOT / ".claude" / "skills"
 SKILLS_DST = ROOT / ".agents" / "skills"
 
-# 보안: 자격증명 디렉터리/파일은 생성물으로 복제하지 않는다(노출면·회전 부담 2배 방지).
+# 보안: 자격증명 디렉터리/파일은 생성물로 복제하지 않는다(노출면·회전 부담 2배 방지).
 # 청결: 캐시·OS 잡파일도 제외.
 SKILL_EXCLUDE_DIRS = {"credentials", "__pycache__", ".git", ".idea", "node_modules", ".venv"}
 SKILL_EXCLUDE_FILES = {"desktop.ini", ".DS_Store", "accounts.json"}
@@ -239,7 +239,7 @@ def iter_nested_canonicals() -> tuple[list[Path], list[Path]]:
             if rel.parent == Path("."):
                 continue  # 루트는 아래에서 별도 처리
             found.append(rel)
-            # junction/symlink 로 ROOT 밖을 가리키면 외부 쓰기 → 경고 대상.
+            # junction 으로 ROOT 밖을 가리키면 외부 쓰기 → 경고 대상.
             real = os.path.normcase(os.path.realpath(dirpath))
             try:
                 inside = os.path.commonpath([real, ROOT_REAL]) == ROOT_REAL
@@ -250,7 +250,7 @@ def iter_nested_canonicals() -> tuple[list[Path], list[Path]]:
                 external.append((rel.parent, os.path.realpath(dirpath)))
     for relparent, target in external:
         print(
-            f"[외부] {relparent.as_posix()}/ 는 junction/symlink 로 ROOT 밖을 가리킵니다 → {target}"
+            f"[외부] {relparent.as_posix()}/ 는 junction 으로 ROOT 밖을 가리킵니다 → {target}"
         )
         print(
             "       이 경로의 AGENTS.md 는 프로젝트 트리 밖에 생성/갱신됩니다. 의도한 것인지 확인하세요"

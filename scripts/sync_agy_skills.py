@@ -18,11 +18,11 @@ sync_agent_docs.py 가 "프로젝트 레벨"(CLAUDE.md → AGENTS.md, .claude/sk
   agy 쪽 복사본이 수정됐으면 덮어쓰지도 삭제하지도 않고 건너뛴다(--force 로 무시).
 
 사용법:
-    python sync_agy_skills.py             # 동기화
-    python sync_agy_skills.py --check     # 드라이런: 무엇이 바뀔지만 출력
-    python sync_agy_skills.py --force [스킬 ...]   # 드리프트 복사본을 정본으로 덮어씀(이름 없으면 전부)
-    python sync_agy_skills.py --init      # allowlist 템플릿 생성(현재 스킬 전부를 주석 처리해서)
-    python sync_agy_skills.py --list <경로>   # 다른 allowlist 파일 사용
+    python <agent-docs-sync 스킬>/scripts/sync_agy_skills.py             # 동기화
+    python <agent-docs-sync 스킬>/scripts/sync_agy_skills.py --check     # 드라이런: 무엇이 바뀔지만 출력
+    python <agent-docs-sync 스킬>/scripts/sync_agy_skills.py --force [스킬 ...]   # 드리프트 복사본을 정본으로 덮어씀(이름 없으면 전부)
+    python <agent-docs-sync 스킬>/scripts/sync_agy_skills.py --init      # allowlist 템플릿 생성(현재 스킬 전부를 주석 처리해서)
+    python <agent-docs-sync 스킬>/scripts/sync_agy_skills.py --list <경로>   # 다른 allowlist 파일 사용
 
 종료 코드 (sync_agent_docs.py 와 같은 규약):
   0  전부 최신이거나 정상 반영됨(경고 없음)
@@ -252,7 +252,7 @@ def materialize_windows(
 
 
 def materialize_posix(src: Path, dst: Path, check: bool) -> str:
-    """POSIX: agy 가 symlink 를 따라가므로 링크로 충분하다(사본 없음 → 드리프트 없음)."""
+    """POSIX: agy 가 symlink 를 따라가므로 링크로 충분하다(스크립트가 만든 링크뿐이면 사본·드리프트 없음)."""
     if dst.is_symlink() and Path(os.readlink(dst)) == src:
         return "이미 최신"
     if check:

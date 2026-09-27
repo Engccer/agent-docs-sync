@@ -7,6 +7,8 @@
     → ~/.gemini/config/skills/<name>
 ```
 
+**실행 전 확인(macOS)**: macOS 판에는 드리프트 가드가 없다. agy 루트에 이미 **실제 폴더**(agy에 직접 설치했거나 손으로 만든 스킬)가 있으면 확인 없이 지운다: allowlist에 있으면 symlink로 바꾸고, 없으면 정리한다. 또 `~/.gemini/config/skills` 자체가 `~/.claude/skills`(또는 그 안)를 가리키는 symlink면 정본 스킬이 지워진다. 실행 전에 `ls -ld ~/.gemini/config/skills`와 `ls -l ~/.gemini/config/skills`로 링크가 아닌 실제 폴더가 없는지 보고, 있으면 그 내용을 정본(`~/.claude/skills`)에 옮긴 뒤 지운다.
+
 ```bash
 python "<이 스킬 경로>/scripts/sync_agy_skills.py"             # 반영
 python "<이 스킬 경로>/scripts/sync_agy_skills.py" --check     # 드라이런
@@ -28,9 +30,7 @@ python "<이 스킬 경로>/scripts/sync_agy_skills.py" --list <경로>   # 다�
 
 첫 판정이 최우선이라, 드리프트를 정본에 반영해 양쪽을 같게 만들면 다음 실행이 조용히 재베이스라인한다. 폐기하고 덮어쓰려면 `--force <스킬명>`(그 스킬만), 이름 없이 `--force`면 전부다. allowlist에서 빠진 스킬의 복사본 **삭제**도 같은 데이터 손실 경로이므로 동일한 가드를 거치며, 복사본이 기록과 다르면 삭제하지 않고 경고한다. 잠긴 파일 등으로 한 스킬이 실패해도 그 스킬만 건너뛰고 나머지 반영은 계속된다.
 
-정본 관리 원칙은 변하지 않는다: **agy 복사본은 빌드 산출물이며 수정은 정본에서만** 한다. 가드는 이 원칙이 깨졌을 때의 안전망이다. → 사례
-
-macOS에는 이 가드가 없다. 스크립트가 거는 것은 symlink뿐이라 사본이 생기지 않는다는 전제인데, agy 루트에 이미 **실제 폴더**(agy에 직접 설치했거나 손으로 만든 스킬)가 있으면 확인 없이 지운다: allowlist에 있으면 symlink로 바꾸고, 없으면 정리한다. macOS에서는 agy 루트에 실제 폴더를 두지 말고 정본(`~/.claude/skills`)에 둔다.
+정본 관리 원칙은 변하지 않는다: **agy 복사본은 빌드 산출물이며 수정은 정본에서만** 한다. 가드는 이 원칙이 깨졌을 때의 안전망이다. → 사례(`references/cases.md`)
 
 ## 왜 별도 스크립트인가
 
@@ -41,7 +41,7 @@ macOS에는 이 가드가 없다. 스크립트가 거는 것은 symlink뿐이라
 | OS | agy의 링크 추종 | 따라서 반영 방식 |
 |---|---|---|
 | Windows | junction을 **따라가지 않음** | **물리 복사** (정본 수정 시마다 재실행 필요) |
-| macOS | symlink를 **따라감** | **symlink** (사본 없음, 드리프트 없음) |
+| macOS | symlink를 **따라감** | **symlink** (스크립트가 만든 링크뿐이면 사본·드리프트 없음) |
 
 같은 이름·같은 내용·같은 자리에서 junction은 미로드, 실제 폴더는 로드되는 것을 통제 실험으로 확인했다. 참고로 **Codex는 Windows junction도 정상 추종**한다. agy만 예외라, "junction이라 안 읽힌다"를 모든 에이전트에 일반화하면 안 된다. → 사례
 
