@@ -48,11 +48,7 @@ find <루트> -name AGENTS.md -type l               # AGENTS.md가 CLAUDE.md를 
 - 동기화 대상이 프로젝트 워크스페이스가 아니라 `~/.claude` 같은 **에이전트 홈**이다 (정본·플러그인 캐시·외부 symlink가 한 트리에 섞임)
 - "내가 만든 스킬이니 환경은 내가 안다"
 
-**위 신호 중 하나라도 있으면 미러링을 멈추고 방향을 실측 확인하라.**
-
-### 실측 근거 (이 게이트가 생긴 이유)
-
-2026-06-05, 작성자 본인의 환경(`~/.claude`)에서 스킬 48개 중 **45개가 `.agents/skills/`로의 symlink**였다(`k-skill-setup`이 agentskills.io 표준 위치에 실파일을 두고 `.claude/skills/`에서 역방향 링크). 게이트가 없던 탓에 에이전트가 미러링 실행 직전까지 갔고, 수동 진단으로만 "고아 정리가 실제 스킬 45개를 삭제"하는 결과를 사전에 막았다. **스킬을 만든 사람조차 자기 환경을 오인했다** — 그래서 추정이 아니라 위 명령으로 확정한다.
+**위 신호 중 하나라도 있으면 미러링을 멈추고 방향을 실측 확인하라.** → 사례
 
 ## 무엇을 하는가
 
@@ -69,7 +65,7 @@ Claude Code는 `CLAUDE.md`와 `.claude/skills/`를 읽지만, Codex·Antigravity
 
 **왜 GEMINI.md는 안 만드나?** Antigravity·Gemini CLI 계열도 `AGENTS.md`를 읽는다. 굳이 세 번째 파일을 늘리지 않는다(필요하면 스크립트의 동기화 쌍에 한 줄 추가 가능).
 
-위 표는 **프로젝트 레벨**이다. **사용자 레벨**(홈 디렉터리의 개인 스킬을 Antigravity CLI에 노출하는 것)은 경로도 규칙도 달라서 별도 스크립트 `scripts/sync_agy_skills.py`가 담당한다 — 아래 "사용자 레벨" 절 참조.
+위 표는 **프로젝트 레벨**이다. **사용자 레벨**(홈 디렉터리의 개인 스킬을 Antigravity CLI에 노출하는 것)은 경로도 규칙도 달라서 별도 스크립트 `scripts/sync_agy_skills.py`가 담당한다 — [`references/agy.md`](references/agy.md) 참조.
 
 ## 빠른 사용 (이미 셋업된 프로젝트)
 
@@ -97,7 +93,7 @@ python sync_agent_docs.py --force    # 발산 경고를 무시하고 발산 파�
 - 프로젝트 루트에 `CLAUDE.md`가 있는가? 없으면 사용자에게 먼저 `/init` 등으로 만들 것을 안내한다(이 스킬은 빈 프로젝트를 채우지 않는다).
 - `.claude/skills/`가 있는가? 없어도 된다(있으면 스킬도 미러링, 없으면 문서만 동기화).
 - **단일 프로젝트인가, 컨테이너인가?** 루트가 하나의 프로젝트가 아니라 여러 독립 저장소·별개 프로젝트를 담은 컨테이너일 수 있다(`CLAUDE.md`가 루트 외 여러 하위에 흩어져 있고 하위마다 자체 `.git`이 있으면 컨테이너 신호). 컨테이너라면 셋업 전에 **적용 범위를 사용자에게 확인**한다(전체 일괄 vs 특정 하위만). 전체로 가면 하위 저장소마다 `AGENTS.md`가 생기고, 그 저장소가 **Public이면 커밋·푸시 시 공개**된다: 사용자에게 알리고, 특정 repo에서 빼려면 그 repo `.gitignore`에 `AGENTS.md`를 넣는 선택지를 제시한다.
-- **ROOT 밖을 가리키는 junction/심링크 점검**: 있으면 스크립트가 따라가 프로젝트 밖에도 `AGENTS.md`를 쓴다(실행 시 `[외부]` 경고로 표시됨). 아래 "junction·심링크 주의" 참조.
+- **ROOT 밖을 가리키는 junction/심링크 점검**: 있으면 스크립트가 따라가 프로젝트 밖에도 `AGENTS.md`를 쓴다(실행 시 `[외부]` 경고로 표시됨). [`references/troubleshooting.md`](references/troubleshooting.md)의 "junction·심링크 주의" 참조.
 
 ### 2. CLAUDE.md 상단에 에이전트 중립 호환 블록 삽입
 
@@ -133,19 +129,9 @@ python sync_agent_docs.py --check    # 재실행 시 모두 "[최신]"이어야 
 - **1차 검증은 멱등성**: `--check` 재실행에서 모두 `[최신]`이면 본문이 형제 `CLAUDE.md`와 일치한다는 가장 강한 증거다. 개수 대조(`find` 등)는 보조로만 쓴다: junction/심링크가 있으면 도구마다(`find` vs 스크립트의 `os.walk`) 카운트가 어긋날 수 있으므로, 불일치가 보이면 멱등성 결과를 신뢰하고 junction 여부부터 확인한다.
 - 각 `AGENTS.md` 상단에 자동생성 배너 + `<!-- SYNC-BODY-START -->` 마커가 있고, 본문이 형제 `CLAUDE.md`와 일치하는지 확인.
 
-## junction·심링크 주의 (ROOT 밖 외부 쓰기)
+## 문제 신호별 대처
 
-스크립트의 `os.walk`는 하위 폴더가 junction/심링크여도 따라간다. 그 link가 **ROOT(프로젝트 루트) 밖**(다른 드라이브·Google Drive 동기화 폴더 등)을 가리키면, 그 안의 `CLAUDE.md`를 정본으로 보고 **프로젝트 트리 밖에 `AGENTS.md`를 생성/갱신**한다(특히 Windows junction에서 흔함).
-
-이를 막지는 않는다(외부 폴더를 일부러 link 해 함께 동기화하려는 경우가 있으므로). 대신 **가시화**한다: 실행 시 해당 경로에 `[외부] … 는 junction/symlink 로 ROOT 밖을 가리킵니다 → <실제 경로>` 경고를 출력한다(종료 코드는 바꾸지 않으므로 매번 동기화해도 노이즈가 되지 않는다). 이 경고가 보이면 판단한다:
-- **의도한 동기화면** 그대로 둔다.
-- **그 link 너머가 자체 `sync_agent_docs.py`를 갖는 별도 프로젝트면**, 두 동기화가 같은 파일을 건드려 충돌·중복이 난다 → 그 폴더명을 스크립트의 `DOC_EXCLUDE_DIRS`에 추가하거나 link를 정리해 제외한다.
-
-신규 셋업인데 외부 junction 너머에 이미 동형 `AGENTS.md`가 있으면 `[생성]`이 아니라 `[갱신]`으로 나온다(그 폴더도 과거 동기화 흔적). 발산으로 오인하지 말 것.
-
-### 접근 불가 경로
-
-walk 가 열지 못한 폴더(예: SSH 세션에서 RedirectionGuard 가 클라우드 드라이브로 가는 junction 통과를 막는 `WinError 448`)는 `[접근 불가]` 경고와 함께 건너뛴다. 그 안의 `AGENTS.md` 는 고아로 판정하지 않고 상태 기록도 지우지 않으며, 고아 후보 판정 중 `OSError` 가 난 경로도 같은 방식으로 건너뛰고 나머지 정리는 계속한다. 끝에 `[요약]` 으로 모아 보여주고 종료 코드 `2` 를 낸다. junction 너머까지 동기화하려면 로컬 세션에서 다시 실행한다.
+`[외부]`·`[접근 불가]`·`[스킬 검증 경고]`가 뜨거나, 프로젝트 루트가 Google Drive 같은 머신 간 동기화 폴더에 있으면 [`references/troubleshooting.md`](references/troubleshooting.md)를 읽는다.
 
 ## 발산(divergence) 처리
 
@@ -157,96 +143,9 @@ walk 가 열지 못한 폴더(예: SSH 세션에서 RedirectionGuard 가 클라�
 
 `--force`는 발산 경고만 무시할 뿐, 보호 대상(자격증명·`_GENERATED.md`)은 건드리지 않는다.
 
-## 머신 간 동기화 폴더(NFC/NFD) 주의
+## 사용자 레벨: Antigravity CLI 글로벌 스킬
 
-프로젝트 루트가 Google Drive 같은 **머신 간 동기화 폴더**면 `.agent-docs-sync.json`도 함께 동기화된다. macOS 는 파일명을 NFD 로, Windows 는 NFC 로 돌려주므로, 같은 한글 경로가 머신마다 다른 상태 키로 저장된다. 게다가 Google Drive 파일시스템은 NFD 별형 경로도 NFC 실파일로 해석하기 때문에, 구버전 스크립트에서는 고아 정리가 NFD 구키를 "대응 CLAUDE.md 없음"으로 오판하고 **살아 있는 `AGENTS.md` 를 별형 경로 경유로 실제 삭제**했다(2026-07-15 실사고: 한 드라이브에서 18개 오삭제. 증상 시그니처: ASCII 경로만 `[최신]`, 한글 경로는 전부 `[갱신]` 직후 `[정리]`).
-
-현재 스크립트는 두 겹으로 방어한다: ① 상태 키를 읽고 쓸 때 항상 NFC 정규화(`norm_key`), ② 고아 삭제 전 형제 `CLAUDE.md` 실존을 직접 확인(`has_sibling_canonical`). **배포본이 이 방어를 갖췄는지가 중요하다** — Drive 류 동기화 폴더에 구버전 사본이 남아 있으면 같은 사고가 재발하므로, 그런 프로젝트를 만나면 사본을 정본 스크립트로 갱신한다. 회귀 테스트: `python tests/test_sync_agent_docs.py`.
-
-## 스킬 frontmatter 검증 (validate_skills)
-
-미러링과 별개로, 스크립트는 정본 각 `.claude/skills/<스킬>/SKILL.md`의 frontmatter가 **Codex·Antigravity가 쓰는 엄격한 `agentskills.io` YAML 파서에서 깨지지 않는지** 매 실행마다 점검한다. 동기화 자체는 차단하지 않고, 문제가 있으면 stderr에 `[스킬 검증 경고]`를 띄운 뒤 종료 코드 `2`(확인 필요)를 낸다.
-
-**왜 필요한가.** Claude Code의 frontmatter 파서는 관대해서 약간 깨진 YAML도 그냥 로드한다. 그래서 정본만 보면 멀쩡해 보이지만, 같은 파일을 미러링한 `.agents/skills/`를 Codex가 읽을 때만 조용히 스킬이 누락되거나 warning이 난다. 이 검증은 그 **"한쪽에서만 깨지는"** 상황을 정본 단계에서 미리 잡는다.
-
-**무엇을 잡나** (PyYAML이 있으면 정식 파싱, 없으면 휴리스틱 폴백 — 어느 쪽이든 아래는 잡는다):
-- frontmatter(`---` 블록) 부재 또는 닫는 `---` 누락
-- **YAML 파싱 실패** — 가장 흔한 함정은 `description`이 plain scalar인데 값 안에 `… 사용: 키워드`처럼 **`: `(콜론+공백)**이 있는 경우. 엄격한 파서는 이를 중첩 매핑으로 오인해 `mapping values are not allowed here`로 실패한다.
-- `name`이 폴더명과 불일치 (표준은 일치 요구)
-- `description` 비어 있음 또는 1024자 초과
-
-**해법(=작성 규칙).** `description`에 콜론·따옴표 등이 들어갈 수 있으므로 **항상 block scalar(`>-`)로 감싼다**:
-
-```yaml
----
-name: 내-스킬            # 폴더명과 정확히 일치
-description: >-
-  한 줄 요약. 다음 키워드가 포함된 요청에 사용: A, B, C.   # 콜론이 있어도 block scalar라 안전
----
-```
-
-> **한글 `name`은 의도적으로 허용한다.** 표준은 `name`을 lowercase ASCII + 폴더명 일치로 권장하지만, 한글 호출명(`/스킬`)을 유지하는 프로젝트에서는 한글 폴더명=한글 name으로 두고, Antigravity는 name 미준수 시 폴더명으로 폴백한다. 그래서 검증은 한글 여부를 **문제로 보지 않고**, 실제로 깨지는 것(파싱 실패·frontmatter 부재·name↔폴더명 불일치)만 잡는다. 영문 slug로 컴파일하는 방식도 가능하나, 정본↔생성물 폴더명 불일치·매핑 유지보수 비용 때문에 기본값은 단순 미러링이다.
-
-## 사용자 레벨: Antigravity CLI 글로벌 스킬 (`scripts/sync_agy_skills.py`)
-
-`sync_agent_docs.py`가 **프로젝트 레벨**을 담당한다면, 이 스크립트는 **사용자 레벨**을 담당한다. 대상은 Antigravity CLI(`agy`) 하나뿐이다.
-
-```
-~/.claude/skills/<name>   (정본. junction/symlink면 실체까지 해석)
-    → ~/.gemini/config/skills/<name>
-```
-
-```bash
-python scripts/sync_agy_skills.py             # 반영
-python scripts/sync_agy_skills.py --check     # 드라이런
-python scripts/sync_agy_skills.py --force [스킬 ...]   # 드리프트 복사본을 정본으로 덮어씀(이름 없으면 전부)
-python scripts/sync_agy_skills.py --init      # allowlist 템플릿 생성
-python scripts/sync_agy_skills.py --list <경로>   # 다른 allowlist 사용
-```
-
-종료 코드는 `sync_agent_docs.py`와 같은 규약(`0` 정상 · `2` 검증 경고/정본 부재/드리프트 건너뜀 · `1` 오류).
-
-### 드리프트 가드 (Windows 전용, 2026-08-25)
-
-물리 복사 구조에서 agy 쪽 복사본을 직접 고치면 다음 동기화의 rmtree+copytree가 그 수정을 경고 없이 지운다. 이를 막기 위해 마지막 동기화 시점의 파일 해시를 `~/.gemini/agy-sync-manifest.json`에 남겨 두고 덮어쓰기 직전에 3자 비교한다. 내용 비교만으로는 "정본이 바뀐 정상 갱신"과 "복사본 쪽 수정"을 구분할 수 없기 때문에 기록이 필요하다.
-
-- 복사본 == 정본 → 잃을 것 없음 → 재베이스라인(기록 갱신, 최우선 판정)
-- 복사본 == 기록, 정본만 다름 → 정상 갱신(덮어씀)
-- 복사본 != 기록 → agy 쪽 수정 감지 → 그 스킬만 건너뛰고 경고(종료 2)
-- 기록 없음 + 복사본 != 정본 → 판정 불가 → 마찬가지로 건너뛰고 경고
-
-첫 판정이 최우선이라, 드리프트를 정본에 반영해 양쪽을 같게 만들면 다음 실행이 조용히 재베이스라인한다. 폐기하고 덮어쓰려면 `--force <스킬명>`(그 스킬만), 이름 없이 `--force`면 전부다. allowlist에서 빠진 스킬의 복사본 **삭제**도 같은 데이터 손실 경로이므로 동일한 가드를 거치며, 복사본이 기록과 다르면 삭제하지 않고 경고한다. 잠긴 파일 등으로 한 스킬이 실패해도 그 스킬만 건너뛰고 나머지 반영은 계속된다.
-
-정본 관리 원칙은 변하지 않는다: **agy 복사본은 빌드 산출물이며 수정은 정본에서만** 한다. 가드는 이 원칙이 깨졌을 때의 안전망이다. macOS는 symlink라 사본 자체가 없으므로 적용되지 않는다.
-
-### 왜 별도 스크립트인가 (2026-08-24 카나리 실측)
-
-**1. agy의 글로벌 스킬 루트는 `~/.gemini/config/skills`다.** `~/.agents/skills`가 아니다. 후자는 agy에게 **워크스페이스 루트**(`<workspace>/.agents/skills`)일 뿐이라 작업 디렉터리가 우연히 홈일 때만 걸린다. 여기를 글로벌 루트로 착각하면 스킬을 몇 개를 넣든 agy는 0개를 본다. `~/.agents/skills`는 Codex의 루트이며, 두 루트를 혼동하는 것이 이 계열 오진의 1순위다.
-
-**2. 링크 추종이 OS마다 다르다.**
-
-| OS | agy의 링크 추종 | 따라서 반영 방식 |
-|---|---|---|
-| Windows | junction을 **따라가지 않음** | **물리 복사** (정본 수정 시마다 재실행 필요) |
-| macOS | symlink를 **따라감** | **symlink** (사본 없음, 드리프트 없음) |
-
-같은 이름·같은 내용·같은 자리에서 junction은 미로드, 실제 폴더는 로드되는 것을 통제 실험으로 확인했다. 참고로 **Codex는 Windows junction도 정상 추종**한다. agy만 예외라, "junction이라 안 읽힌다"를 모든 에이전트에 일반화하면 안 된다.
-
-**3. 정본 경로를 머신별로 하드코딩하지 않는다.** `~/.claude/skills/<name>`을 realpath로 해석하면 Windows(junction → `Windows-Projects/...`)든 macOS(symlink → `Mac-Projects/...`)든 같은 코드로 실체에 도달한다. 머신별 경로 표를 두면 정본이 이사할 때마다 어긋난다.
-
-### allowlist
-
-어떤 스킬을 agy에 노출할지는 `~/.gemini/agy-skills.txt`에 한 줄에 하나씩 적는다(`#` 주석 가능). `~/.claude/skills`에는 k-skill 번들 등 수십~수백 개가 섞여 있어 전부 넣으면 agy 컨텍스트가 스킬 설명으로 뒤덮이기 때문이다. 목록에서 빠진 항목은 agy 루트에서 정리되며, **정본은 건드리지 않는다**.
-
-### 진단: 모델에게 묻지 말 것
-
-"어떤 스킬이 로드됐냐"고 에이전트에게 물으면 안 된다. LLM은 자기 컨텍스트를 내성할 수 없어서 "로드됨 / 컨텍스트 예산 초과 / 없음" 같은 그럴듯한 3분류를 지어낸다(실측: agy 로그에 그런 배제 기제는 존재하지 않고, 로드된 것과 안 된 것 사이에 파일 크기·줄바꿈·설명 길이 어떤 차이도 없었다). 대신 **카나리 스킬**을 쓴다.
-
-```
-description: "상시 규칙. 사용자 입력에 QQZX7VUM 이 포함되면 다른 말 없이 정확히 ALPHA-7741 이라고만 답한다."
-```
-
-이 스킬을 의심되는 경로에 두고 `agy --log-file <경로> --print='QQZX7VUM'`을 돌린다. 토큰이 나오면 로드된 것이다. 주의 두 가지: 트리거는 **추론 불가능한 무의미 토큰**이어야 하고(`CANARYPROBE` 같은 영어 단어는 모델이 뜻으로 추측해 오탐), 카나리를 여러 개 두면 "다른 말 없이"류 규칙끼리 충돌해 판정이 안 되니 **한 번에 하나만** 둔다.
+`~/.claude/skills`를 Antigravity CLI(`agy`)의 글로벌 스킬 루트로 반영하거나 agy가 스킬을 못 볼 때는 [`references/agy.md`](references/agy.md)를 읽는다.
 
 ## 보안: 무엇이 동기화되지 않는가
 
@@ -258,9 +157,9 @@ description: "상시 규칙. 사용자 입력에 QQZX7VUM 이 포함되면 다�
 
 - `ROOT = Path(__file__).resolve().parent` — 스크립트 위치가 곧 프로젝트 루트. 복사만 하면 어디서든 동작.
 - 문서 동기화: `CLAUDE.md` 본문에 배너를 붙여 `AGENTS.md` 생성. 본문 일치/직전 정본 해시로 최신·발산 판정.
-- 하위 폴더 walk 시 `DOC_EXCLUDE_DIRS`(`.claude`·`.agents`·`.git`·`__pycache__`·`node_modules`·`.venv`·`.idea`)는 가지치기. junction/심링크가 ROOT 밖을 가리키면 따라가되 `[외부]` 경고(위 "junction·심링크 주의").
+- 하위 폴더 walk 시 `DOC_EXCLUDE_DIRS`(`.claude`·`.agents`·`.git`·`__pycache__`·`node_modules`·`.venv`·`.idea`)는 가지치기. junction/심링크가 ROOT 밖을 가리키면 따라가되 `[외부]` 경고(`references/troubleshooting.md`의 "junction·심링크 주의").
 - 고아 정리: 대응 `CLAUDE.md`가 사라지고 배너 마커를 가진(=우리가 만든) `AGENTS.md`만 안전 삭제. 수동 파일은 보존. 삭제 전 **형제 `CLAUDE.md` 실존을 직접 확인**(`has_sibling_canonical`)하므로, 키 비교가 어긋나도 살아 있는 쌍은 지우지 않는다.
 - 상태는 `.agent-docs-sync.json`에 정본 본문 해시로 저장. 루트 상태키는 `"AGENTS.md"`, 하위는 POSIX 상대경로이며 **항상 NFC 로 정규화**(`norm_key`)한다.
-- 스킬 검증(`validate_skills`)은 미러링과 독립적으로 매 실행 정본 `SKILL.md` frontmatter를 점검한다(위 "스킬 frontmatter 검증" 참조).
+- 스킬 검증(`validate_skills`)은 미러링과 독립적으로 매 실행 정본 `SKILL.md` frontmatter를 점검한다(`references/troubleshooting.md`의 "스킬 frontmatter 검증" 참조).
 
 세부 구현은 `scripts/sync_agent_docs.py`의 docstring과 주석 참조.
