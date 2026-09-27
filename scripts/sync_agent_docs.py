@@ -19,8 +19,8 @@ sync_agent_docs.py — 에이전트 지침·스킬 단방향 동기화
 - 상태 키는 항상 NFC 로 정규화한다(norm_key). 상태 파일이 Google Drive 로 머신 간 동기화되면
   macOS(NFD)·Windows(NFC)가 같은 한글 경로를 다른 키로 저장해 고아 정리가 오폭한다.
   또한 고아 삭제 전 형제 CLAUDE.md 실존을 직접 확인한다(has_sibling_canonical) — 키 비교가
-  어떤 이유로든 어긋나도 살아 있는 쌍은 지우지 않는 최종 가드(2026-07-15 오삭제 사고 재발 방지).
-- 스킬 폴더는 정본을 그대로 미러링한다: 새/변경 파일은 복사, 정본에서 사라진 파일은 생성본에서도 정리.
+  어떤 이유로든 어긋나도 살아 있는 쌍은 지우지 않는 최종 가드(Drive 동기화 폴더의 오삭제 사고 재발 방지).
+- 스킬 폴더는 정본을 그대로 미러링한다: 새/변경 파일은 복사, 정본에서 사라진 파일은 생성물에서도 정리.
   단 자격증명·캐시·OS 잡파일은 보안·청결을 위해 제외한다(아래 SKILL_EXCLUDE_*).
   스킬 트리는 파일 수가 많아 개별 발산 경고는 두지 않는다(정본 기준 무조건 미러링).
 - 스킬 검증(validate_skills): 미러링과 별개로 정본 각 SKILL.md 의 frontmatter 가
@@ -39,7 +39,7 @@ sync_agent_docs.py — 에이전트 지침·스킬 단방향 동기화
 
 종료 코드:
   0  전부 최신이거나 정상 반영됨(발산·스킬 검증 경고 없음)
-  2  발산 파일을 건너뜀, 또는 스킬 frontmatter 검증 경고가 있음 — 나머지는 정상 동기화됨.
+  2  발산 파일이나 접근 불가 경로를 건너뜀, 또는 스킬 frontmatter 검증 경고가 있음 — 나머지는 정상 동기화됨.
      실패가 아니라 "확인 필요" 신호.
      (무관한 폴더의 발산이 떠 있어도 내가 방금 고친 CLAUDE.md 의 AGENTS.md 는 그대로 생성/갱신된다.)
   1  기타 오류(정본 CLAUDE.md 부재 등)
@@ -70,7 +70,7 @@ CANONICAL = ROOT / "CLAUDE.md"   # 루트 정본
 STATE_FILE = ROOT / ".agent-docs-sync.json"
 
 # walk 가 junction/symlink 를 따라 ROOT 밖으로 나갔는지 판정하기 위한 기준 경로.
-# (.resolve() 로 ROOT 는 이미 심링크 해소된 절대경로이며, 대소문자 무관 비교를 위해 normcase.)
+# (.resolve() 로 ROOT 는 이미 symlink 해소된 절대경로이며, 대소문자 무관 비교를 위해 normcase.)
 ROOT_REAL = os.path.normcase(str(ROOT))
 
 # 재귀 문서 동기화에서 제외할 디렉터리(스킬 트리·VCS·캐시).
@@ -85,7 +85,7 @@ BANNER = (
     "> 🤖 **이 파일은 자동 생성됩니다. 직접 수정하지 마세요.**\n"
     "> 정본은 `CLAUDE.md` 입니다. 내용을 바꾸려면 `CLAUDE.md` 를 수정한 뒤\n"
     "> 프로젝트 루트에서 `python sync_agent_docs.py` 를 실행하세요.\n"
-    "> 이 파일을 직접 고치면 다음 동기화 때 경고와 함께 덮어쓰기 대상이 됩니다.\n"
+    "> 이 파일을 직접 고치면 다음 동기화 때 경고와 함께 건너뛰며, --force 로 실행하면 덮어써집니다.\n"
     "\n"
     f"{BODY_MARKER}\n"
 )
@@ -94,7 +94,7 @@ BANNER = (
 SKILLS_SRC = ROOT / ".claude" / "skills"
 SKILLS_DST = ROOT / ".agents" / "skills"
 
-# 보안: 자격증명 디렉터리/파일은 생성본으로 복제하지 않는다(노출면·회전 부담 2배 방지).
+# 보안: 자격증명 디렉터리/파일은 생성물으로 복제하지 않는다(노출면·회전 부담 2배 방지).
 # 청결: 캐시·OS 잡파일도 제외.
 SKILL_EXCLUDE_DIRS = {"credentials", "__pycache__", ".git", ".idea", "node_modules", ".venv"}
 SKILL_EXCLUDE_FILES = {"desktop.ini", ".DS_Store", "accounts.json"}
@@ -104,12 +104,12 @@ SKILL_EXCLUDE_GLOBS = (
 )
 # 고아 정리에서 "무시"할 OS/캐시 잡파일. Google Drive 는 폴더마다 desktop.ini 를 자동
 # 생성하므로, 이를 고아로 보고 지우면 Drive 가 다시 만들어 매 실행이 churn 된다 → 그냥 둔다.
-# (자격증명은 여기 넣지 않는다. 생성본에 남아 있으면 보안상 지우는 게 맞으므로 고아로 처리.)
+# (자격증명은 여기 넣지 않는다. 생성물에 남아 있으면 보안상 지우는 게 맞으므로 고아로 처리.)
 SKILL_IGNORE_IN_TARGET_DIRS = {"__pycache__"}
 SKILL_IGNORE_IN_TARGET_FILES = {"desktop.ini", ".DS_Store"}
 SKILL_IGNORE_IN_TARGET_GLOBS = ("*.pyc", "*.pyo")
 
-# 동기화 스크립트가 생성본 루트에 남기는 안내 파일(고아 정리 대상에서 보호).
+# 동기화 스크립트가 생성물 루트에 남기는 안내 파일(고아 정리 대상에서 보호).
 SKILLS_README_NAME = "_GENERATED.md"
 SKILLS_README = (
     "# (자동 생성) `.agents/skills/`\n"
@@ -134,7 +134,7 @@ def norm_key(s: str) -> str:
     walk 가 NFD 파일명을 돌려줘 NFD 키를, Windows 는 NFC 키를 만든다. 정규화
     없이는 같은 경로가 두 키로 갈라지고, 고아 정리가 NFD 구키를 고아로 오판한다.
     결정타: Google Drive 파일시스템은 NFD 별형 경로도 NFC 실파일로 해석하므로,
-    살아 있는 AGENTS.md 가 구키 경유로 실제 삭제된다(2026-07-15 실사고, 18개 오삭제)."""
+    살아 있는 AGENTS.md 가 구키 경유로 실제 삭제된다(실제로 일어난 사고)."""
     return unicodedata.normalize("NFC", s)
 
 
@@ -208,7 +208,8 @@ def iter_nested_canonicals() -> tuple[list[Path], list[Path]]:
     접근 불가 폴더를 따로 모아 고아 정리에서 제외시킨다. 실례: SSH 세션의
     RedirectionGuard 가 클라우드 드라이브로 가는 junction 통과를 막는다(WinError 448).
 
-    junction/symlink 로 ROOT 밖을 가리키는 폴더도 그대로 따라간다(의도적으로
+    os.walk 기본값(followlinks=False)이라 symlink 폴더는 따라가지 않고, Windows junction 은
+    islink 가 False 라 따라간다. ROOT 밖을 가리키는 junction 도 그대로 따라간다(의도적으로
     외부 폴더를 프로젝트에 link 해 함께 동기화하는 경우가 있으므로). 다만 그런
     경로의 AGENTS.md 는 프로젝트 트리 밖(다른 드라이브·동기화 폴더 등)에
     생성/갱신되므로, 조용히 외부를 건드리지 않도록 [외부] 경고로 가시화한다."""
@@ -291,9 +292,6 @@ def _sync_doc_pair(canonical: Path, target: Path, state_key: str, state: dict, a
 
     # 발산 감지: 본문이 "직전 동기화 시 정본"과 다르면 = 손으로 수정됨(또는 관리 밖에서 생성).
     untouched = (prev_hash is not None and existing_body_hash == prev_hash)
-    # 상태 파일이 없을 때의 보수적 판단: 현재 정본과 같으면 손댄 적 없는 것으로 간주.
-    if prev_hash is None and existing_body_hash == source_hash:
-        untouched = True
 
     if not untouched and not args.force:
         rel_src = canonical.relative_to(ROOT)
@@ -301,8 +299,8 @@ def _sync_doc_pair(canonical: Path, target: Path, state_key: str, state: dict, a
             f"[발산 경고] {state_key} 이(가) 직전 동기화 이후 직접 수정됐거나, "
             f"동기화 관리 밖에서 만들어진 것으로 보입니다.\n"
             f"            정본({rel_src})에서 생성한 내용과 본문이 다릅니다.\n"
-            f"            이 파일은 생성물이므로 수정 내용을 정본으로 옮긴 뒤 다시 실행하거나,\n"
-            f"            수정을 버려도 된다면 --force 로 강제 덮어쓰기 하세요.",
+            f"            이 파일은 생성물이므로 살릴 내용은 정본으로 옮긴 뒤 --force 로 덮어쓰세요\n"
+            f"            (수정을 버려도 되면 바로 --force).",
             file=sys.stderr,
         )
         return True, False
@@ -434,7 +432,7 @@ def sync_skills(args) -> bool:
             if not args.check:
                 shutil.copyfile(s, d)
 
-    # 2) 고아 정리: 정본에 없는 생성본 파일 삭제(생성 안내 파일은 보호).
+    # 2) 고아 정리: 정본에 없는 생성물 파일 삭제(생성 안내 파일은 보호).
     protected = {Path(SKILLS_README_NAME)}
     if SKILLS_DST.exists():
         for dirpath, dirnames, filenames in os.walk(SKILLS_DST):
@@ -489,7 +487,7 @@ def _load_frontmatter(text: str) -> tuple[str, dict | None, str]:
     except ImportError:
         # 폴백: PyYAML 없는 PC. 모든 top-level plain scalar 필드의 ': '(콜론+공백)를
         # 휴리스틱으로 잡는다. description 뿐 아니라 compatibility 등 임의 필드 포함 —
-        # 실측 함정: liteparse 의 'compatibility: Requires … macOS: Homebrew …' 처럼
+        # 실제로 겪은 함정: liteparse 의 'compatibility: Requires … macOS: Homebrew …' 처럼
         # description 이 아닌 필드의 콜론이 frontmatter 전체 파싱을 깨뜨린다.
         import re as _re
         data: dict = {}
@@ -527,8 +525,8 @@ def validate_skills() -> list[str]:
     깨지지 않는지 점검하고, 문제 메시지 목록을 돌려준다(빈 목록 = 전부 통과).
     동기화를 차단하진 않지만, 생성물이 다른 에이전트에서 조용히 무시될 위험을 사전 경고한다.
 
-    주의: name 의 비-ASCII(한글) 여부는 검사하지 않는다. 본 프로젝트는 한글 호출명(/스킬)을
-    의도적으로 유지하며, Antigravity 는 name 미준수 시 폴더명으로 폴백하므로 차단 사유가 아니다.
+    주의: name 의 비-ASCII(한글) 여부는 검사하지 않는다. 한글 호출명(/스킬)을 의도적으로
+    유지하는 프로젝트가 있고, Antigravity 는 name 미준수 시 폴더명으로 폴백하므로 차단 사유가 아니다.
     표준 위반으로 '깨지는' 것(파싱 실패·frontmatter 부재·name↔폴더명 불일치)만 잡는다."""
     problems: list[str] = []
     if not SKILLS_SRC.exists():
@@ -614,7 +612,7 @@ def main() -> int:
             f"\n[요약] 발산으로 건너뛴 AGENTS.md {len(diverged_keys)}개: "
             + ", ".join(diverged_keys)
             + "\n        ↳ 나머지 문서·스킬은 정상 동기화됨(종료 코드 2 = 건너뛴 파일 확인 필요, 실패 아님)."
-            + "\n        ↳ 정본이 맞으면 --force 로 덮어쓰고, 생성물에 살릴 내용이 있으면 CLAUDE.md 로 옮긴 뒤 재실행."
+            + "\n        ↳ 정본이 맞으면 --force 로 덮어쓰고, 생성물에 살릴 내용이 있으면 CLAUDE.md 로 옮긴 뒤 --force 로 재실행."
         )
         return 2
     if skill_problems:

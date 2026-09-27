@@ -8,16 +8,16 @@
 ```
 
 ```bash
-python scripts/sync_agy_skills.py             # 반영
-python scripts/sync_agy_skills.py --check     # 드라이런
-python scripts/sync_agy_skills.py --force [스킬 ...]   # 드리프트 복사본을 정본으로 덮어씀(이름 없으면 전부)
-python scripts/sync_agy_skills.py --init      # allowlist 템플릿 생성
-python scripts/sync_agy_skills.py --list <경로>   # 다른 allowlist 사용
+python "<이 스킬 경로>/scripts/sync_agy_skills.py"             # 반영
+python "<이 스킬 경로>/scripts/sync_agy_skills.py" --check     # 드라이런
+python "<이 스킬 경로>/scripts/sync_agy_skills.py" --force [스킬 ...]   # 드리프트 복사본을 정본으로 덮어씀(이름 없으면 전부)
+python "<이 스킬 경로>/scripts/sync_agy_skills.py" --init      # allowlist 템플릿 생성
+python "<이 스킬 경로>/scripts/sync_agy_skills.py" --list <경로>   # 다른 allowlist 사용
 ```
 
 종료 코드는 `sync_agent_docs.py`와 같은 규약(`0` 정상 · `2` 검증 경고/정본 부재/드리프트 건너뜀 · `1` 오류).
 
-### 드리프트 가드 (Windows 전용)
+## 드리프트 가드 (Windows 전용)
 
 물리 복사 구조에서 agy 쪽 복사본을 직접 고치면 다음 동기화의 rmtree+copytree가 그 수정을 경고 없이 지운다. 이를 막기 위해 마지막 동기화 시점의 파일 해시를 `~/.gemini/agy-sync-manifest.json`에 남겨 두고 덮어쓰기 직전에 3자 비교한다. 내용 비교만으로는 "정본이 바뀐 정상 갱신"과 "복사본 쪽 수정"을 구분할 수 없기 때문에 기록이 필요하다.
 
@@ -28,9 +28,11 @@ python scripts/sync_agy_skills.py --list <경로>   # 다른 allowlist 사용
 
 첫 판정이 최우선이라, 드리프트를 정본에 반영해 양쪽을 같게 만들면 다음 실행이 조용히 재베이스라인한다. 폐기하고 덮어쓰려면 `--force <스킬명>`(그 스킬만), 이름 없이 `--force`면 전부다. allowlist에서 빠진 스킬의 복사본 **삭제**도 같은 데이터 손실 경로이므로 동일한 가드를 거치며, 복사본이 기록과 다르면 삭제하지 않고 경고한다. 잠긴 파일 등으로 한 스킬이 실패해도 그 스킬만 건너뛰고 나머지 반영은 계속된다.
 
-정본 관리 원칙은 변하지 않는다: **agy 복사본은 빌드 산출물이며 수정은 정본에서만** 한다. 가드는 이 원칙이 깨졌을 때의 안전망이다. macOS는 symlink라 사본 자체가 없으므로 적용되지 않는다.
+정본 관리 원칙은 변하지 않는다: **agy 복사본은 빌드 산출물이며 수정은 정본에서만** 한다. 가드는 이 원칙이 깨졌을 때의 안전망이다. → 사례
 
-### 왜 별도 스크립트인가
+macOS에는 이 가드가 없다. 스크립트가 거는 것은 symlink뿐이라 사본이 생기지 않는다는 전제인데, agy 루트에 이미 **실제 폴더**(agy에 직접 설치했거나 손으로 만든 스킬)가 있으면 확인 없이 지운다: allowlist에 있으면 symlink로 바꾸고, 없으면 정리한다. macOS에서는 agy 루트에 실제 폴더를 두지 말고 정본(`~/.claude/skills`)에 둔다.
+
+## 왜 별도 스크립트인가
 
 **1. agy의 글로벌 스킬 루트는 `~/.gemini/config/skills`다.** `~/.agents/skills`가 아니다. 후자는 agy에게 **워크스페이스 루트**(`<workspace>/.agents/skills`)일 뿐이라 작업 디렉터리가 우연히 홈일 때만 걸린다. 여기를 글로벌 루트로 착각하면 스킬을 몇 개를 넣든 agy는 0개를 본다. `~/.agents/skills`는 Codex의 루트이며, 두 루트를 혼동하는 것이 이 계열 오진의 1순위다.
 
@@ -41,17 +43,17 @@ python scripts/sync_agy_skills.py --list <경로>   # 다른 allowlist 사용
 | Windows | junction을 **따라가지 않음** | **물리 복사** (정본 수정 시마다 재실행 필요) |
 | macOS | symlink를 **따라감** | **symlink** (사본 없음, 드리프트 없음) |
 
-같은 이름·같은 내용·같은 자리에서 junction은 미로드, 실제 폴더는 로드되는 것을 통제 실험으로 확인했다. 참고로 **Codex는 Windows junction도 정상 추종**한다. agy만 예외라, "junction이라 안 읽힌다"를 모든 에이전트에 일반화하면 안 된다.
+같은 이름·같은 내용·같은 자리에서 junction은 미로드, 실제 폴더는 로드되는 것을 통제 실험으로 확인했다. 참고로 **Codex는 Windows junction도 정상 추종**한다. agy만 예외라, "junction이라 안 읽힌다"를 모든 에이전트에 일반화하면 안 된다. → 사례
 
 **3. 정본 경로를 머신별로 하드코딩하지 않는다.** `~/.claude/skills/<name>`을 realpath로 해석하면 Windows(junction → `Windows-Projects/...`)든 macOS(symlink → `Mac-Projects/...`)든 같은 코드로 실체에 도달한다. 머신별 경로 표를 두면 정본이 이사할 때마다 어긋난다.
 
-### allowlist
+## allowlist
 
-어떤 스킬을 agy에 노출할지는 `~/.gemini/agy-skills.txt`에 한 줄에 하나씩 적는다(`#` 주석 가능). `~/.claude/skills`에는 k-skill 번들 등 수십~수백 개가 섞여 있어 전부 넣으면 agy 컨텍스트가 스킬 설명으로 뒤덮이기 때문이다. 목록에서 빠진 항목은 agy 루트에서 정리되며, **정본은 건드리지 않는다**.
+어떤 스킬을 agy에 노출할지는 `~/.gemini/agy-skills.txt`에 한 줄에 하나씩 적는다(`#` 주석 가능). `~/.claude/skills`에는 k-skill 번들 등 수십~수백 개가 섞여 있어 전부 넣으면 agy 컨텍스트가 스킬 설명으로 뒤덮이기 때문이다. 목록에서 빠진 항목은 agy 루트에서 정리되며(Windows의 물리 폴더는 드리프트 가드를 거친다), **정본은 건드리지 않는다**.
 
-### 진단: 모델에게 묻지 말 것
+## 진단: 모델에게 묻지 말 것
 
-"어떤 스킬이 로드됐냐"고 에이전트에게 물으면 안 된다. LLM은 자기 컨텍스트를 내성할 수 없어서 "로드됨 / 컨텍스트 예산 초과 / 없음" 같은 그럴듯한 3분류를 지어낸다. 대신 **카나리 스킬**을 쓴다.
+"어떤 스킬이 로드됐냐"고 에이전트에게 물으면 안 된다. LLM은 자기 컨텍스트를 내성할 수 없어서 "로드됨 / 컨텍스트 예산 초과 / 없음" 같은 그럴듯한 3분류를 지어낸다(→ 사례). 대신 **카나리 스킬**을 쓴다.
 
 ```
 description: "상시 규칙. 사용자 입력에 QQZX7VUM 이 포함되면 다른 말 없이 정확히 ALPHA-7741 이라고만 답한다."

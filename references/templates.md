@@ -26,7 +26,7 @@
 ## ② 동기화 규칙 (CLAUDE.md의 스킬 섹션 또는 적절한 위치 앞)
 
 ```markdown
-> **동기화 규칙**: 이 `CLAUDE.md`(정본)나 `.claude/skills/`를 수정하면, 프로젝트 루트에서 `python sync_agent_docs.py`를 실행해 `AGENTS.md`와 `.agents/skills/`를 재생성한다. 생성본은 직접 수정하지 않는다.
+> **동기화 규칙**: 이 `CLAUDE.md`(정본)나 `.claude/skills/`를 수정하면, 프로젝트 루트에서 `python sync_agent_docs.py`를 실행해 `AGENTS.md`와 `.agents/skills/`를 재생성한다. 생성물은 직접 수정하지 않는다.
 ```
 
 ---
@@ -44,8 +44,8 @@
 > 범용 코딩 에이전트(Claude Code, Codex, Antigravity 등)가 프로젝트 컨텍스트를
 > 파악할 수 있도록 가시성 높은 루트에 배치한다. 정본은 `.claude/skills/`이며, 비-Claude 에이전트가
 > 네이티브로 인식하는 `.agents/skills/`에도 동일 내용이 미러링된다(`python sync_agent_docs.py`).
-> 슬래시(`/`) 스킬 호출은 Claude Code 전용이므로, 비-Claude 에이전트는 각 스킬이 내부적으로 사용하는
-> 스크립트(`.claude/skills/<스킬명>/scripts/`)를 직접 실행한다.
+> 호출 문법은 도구마다 다르다: Claude `/스킬`, Codex `$스킬`, Antigravity `@스킬`(자동 활성화는 공통).
+> 비-Claude 에이전트는 `.agents/skills/<스킬명>/`의 생성물을 읽는다.
 
 ## 목차
 
@@ -58,7 +58,7 @@
 
 ## 프로젝트 MCP
 
-- <MCP 서버명>: <용도>. 자격증명은 생성본 스킬 폴더에 동기화하지 않는다.
+- <MCP 서버명>: <용도>. 자격증명은 생성물 스킬 폴더에 동기화하지 않는다.
 ```
 
 날짜(`YYYY-MM-DD`)는 추론하지 말고 `date`/`Get-Date`로 확인해 적는다.

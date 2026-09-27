@@ -9,46 +9,13 @@ sync_agent_docs.py 가 "프로젝트 레벨"(CLAUDE.md → AGENTS.md, .claude/sk
     ~/.claude/skills/<name>   (정본. junction/symlink 면 실체까지 해석)
         → ~/.gemini/config/skills/<name>
 
-왜 별도 스크립트인가 (2026-08-24 카나리 실측으로 확정된 사실들):
-
-1. **agy 의 글로벌 스킬 루트는 `~/.gemini/config/skills` 다.** `~/.agents/skills` 가 아니다.
-   `~/.agents/skills` 는 agy 에게 "워크스페이스 루트"(`<workspace>/.agents/skills`)일 뿐이라,
-   작업 디렉터리가 우연히 홈일 때만 걸린다. 여기를 글로벌 루트로 착각하면 스킬을 몇 개를
-   넣든 agy 는 0 개를 본다. (agy 바이너리 문자열 + 카나리 A/B 로 확인)
-
-2. **링크 추종이 OS 마다 다르다.**
-   - Windows: agy 는 스킬 루트의 **junction 을 따라가지 않는다.** 같은 이름·같은 내용·같은
-     자리에서 junction 은 미로드, 실제 폴더는 로드됨(통제 실험). → **물리 복사**해야 한다.
-   - macOS: agy 는 **symlink 를 정상적으로 따라간다.** → **symlink** 로 충분하다(사본 없음,
-     드리프트 없음).
-   같은 이유로 Windows 에서만 정본이 바뀔 때마다 이 스크립트를 다시 돌려야 한다.
-   (참고: Codex 는 Windows junction 도 정상 추종한다. agy 만 예외다.)
-
-3. **정본 경로를 머신별로 하드코딩하지 않는다.** `~/.claude/skills/<name>` 을 realpath 로
-   해석하면 Windows(junction→`Windows-Projects/...`)든 macOS(symlink→`Mac-Projects/...`)든
-   같은 코드로 실체에 도달한다. 머신별 경로 표를 두면 정본이 이사할 때마다 어긋난다.
-
-대상 목록(allowlist)을 쓰는 이유: `~/.claude/skills` 에는 k-skill 번들 등 수십~수백 개가 섞여
-있어 전부 넣으면 agy 컨텍스트가 스킬 설명으로 뒤덮인다. 어떤 스킬을 agy 에 노출할지는 사람이
-정할 문제라 파일로 분리했다(`~/.gemini/agy-skills.txt`). 없으면 `--init` 로 템플릿을 만든다.
-
-드리프트 가드 (Windows 전용, 2026-08-25):
-
-    물리 복사 구조에서는 agy 쪽 복사본을 직접 고치면 다음 동기화의 rmtree+copytree 가
-    그 수정을 경고 없이 지운다. 이를 막기 위해 마지막 동기화 시점의 파일 해시를
-    `~/.gemini/agy-sync-manifest.json` 에 남겨 두고, 덮어쓰기 직전에 3자 비교한다.
-    (내용 비교만으로는 "정본이 바뀐 정상 갱신"과 "복사본 쪽 수정"을 구분할 수 없다.)
-
-      - 복사본 == 정본                → 잃을 것 없음 → 재베이스라인(기록 갱신, 최우선 판정)
-      - 복사본 == 기록, 정본만 다름   → 정상 갱신(덮어씀)
-      - 복사본 != 기록                → agy 쪽 수정 감지 → 그 스킬만 건너뛰고 경고
-      - 기록 없음 + 복사본 != 정본    → 판정 불가 → 마찬가지로 건너뛰고 경고
-
-    첫 판정이 최우선이므로, 드리프트를 정본에 반영해 양쪽을 같게 만들면 다음 실행이
-    조용히 재베이스라인한다. 폐기하고 정본으로 덮어쓰려면 --force <스킬명>
-    (이름 없이 --force 만 주면 전부). allowlist 에서 빠진 스킬의 복사본 "삭제"도
-    같은 데이터 손실 경로이므로 동일한 가드를 거친다. macOS 는 symlink 라 사본
-    자체가 없으므로 이 가드가 적용되지 않는다.
+요지(배경·근거는 스킬의 references/agy.md):
+- agy 의 글로벌 스킬 루트는 ~/.gemini/config/skills 다(~/.agents/skills 는 agy 에게 워크스페이스 루트).
+- Windows 의 agy 는 junction 을 따라가지 않아 물리 복사하고, macOS 는 symlink 를 건다.
+- 정본 경로는 ~/.claude/skills/<name> 을 realpath 로 해석해 머신별 하드코딩을 피한다.
+- 노출할 스킬은 allowlist(~/.gemini/agy-skills.txt)로 고른다. 없으면 --init 로 템플릿을 만든다.
+- 드리프트 가드(Windows 전용): 마지막 동기화 해시(~/.gemini/agy-sync-manifest.json)와 3자 비교해
+  agy 쪽 복사본이 수정됐으면 덮어쓰지도 삭제하지도 않고 건너뛴다(--force 로 무시).
 
 사용법:
     python sync_agy_skills.py             # 동기화
@@ -57,7 +24,7 @@ sync_agent_docs.py 가 "프로젝트 레벨"(CLAUDE.md → AGENTS.md, .claude/sk
     python sync_agy_skills.py --init      # allowlist 템플릿 생성(현재 스킬 전부를 주석 처리해서)
     python sync_agy_skills.py --list <경로>   # 다른 allowlist 파일 사용
 
-종료 코드 (sync_agent_docs.py 와 동일 규약):
+종료 코드 (sync_agent_docs.py 와 같은 규약):
   0  전부 최신이거나 정상 반영됨(경고 없음)
   2  frontmatter 검증 경고, 목록에 있으나 정본이 없는 스킬, 또는 드리프트로 건너뛴
      스킬 — 나머지는 정상 반영됨. 실패가 아니라 "확인 필요" 신호.
@@ -89,7 +56,7 @@ MANIFEST_PATH = HOME / ".gemini" / "agy-sync-manifest.json"
 
 IS_WINDOWS = os.name == "nt"
 
-# sync_agent_docs.py 의 SKILL_EXCLUDE_* 와 같은 정책(자격증명·캐시·OS 잡파일 제외).
+# sync_agent_docs.py 의 SKILL_EXCLUDE_* 와 같은 취지의 정책(자격증명·캐시·OS 잡파일 제외, 여기는 venv 도 제외).
 EXCLUDE_DIRS = {"credentials", "__pycache__", ".git", ".idea", "node_modules", ".venv", "venv"}
 EXCLUDE_FILES = {"desktop.ini", ".DS_Store", "accounts.json"}
 EXCLUDE_GLOBS = (
@@ -101,7 +68,7 @@ LIST_HEADER = """\
 # Antigravity CLI(agy) 에 노출할 스킬 목록.
 #
 # 한 줄에 스킬 이름 하나. '#' 이후는 주석. 이름은 ~/.claude/skills/<name> 을 가리킨다.
-# 반영: python sync_agy_skills.py
+# 반영: python <agent-docs-sync 스킬>/scripts/sync_agy_skills.py
 #
 # 여기 없는 스킬은 agy 글로벌 루트에서 제거된다(정본은 건드리지 않음).
 """
@@ -343,7 +310,7 @@ def main() -> int:
 
     if not args.list.is_file():
         print(f"오류: allowlist 가 없다: {args.list}", file=sys.stderr)
-        print("  'python sync_agy_skills.py --init' 로 템플릿을 만들어라.", file=sys.stderr)
+        print(f"  'python {Path(__file__).resolve()} --init' 로 템플릿을 만들어라.", file=sys.stderr)
         return 1
 
     names = load_list(args.list)

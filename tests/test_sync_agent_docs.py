@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""sync_agent_docs.py 회귀 테스트 — NFC/NFD 고아 오폭 (2026-07-15 실사고).
+"""sync_agent_docs.py 회귀 테스트 — 고아 정리 오폭 (T1~T4 NFC/NFD, T5·T6 접근 불가).
 
 사고 시나리오: 상태 파일(.agent-docs-sync.json)이 Google Drive 로 머신 간 동기화되는
 환경에서, macOS 실행이 남긴 NFD 한글 키와 Windows walk 의 NFC 키가 갈라짐.
@@ -13,6 +13,7 @@ NFD 별형 경로를 NFC 실파일로 해석(resolve)하므로 **살아 있는 A
   T3  NFD 구키 상태로 sync_docs 를 돌려도 살아 있는 AGENTS.md 가 보존되고
       상태에 NFD 구키가 잔존하지 않는다
   T4  진짜 고아(CLAUDE.md 삭제됨)는 여전히 정리된다
+  T5·T6  접근 불가 경로 (test_unreachable_folder 참조)
 
 실행: python tests/test_sync_agent_docs.py  (표준 라이브러리만 사용, 종료 코드 0=통과)
 """
@@ -49,7 +50,7 @@ class Args:
 
 
 def test_unreachable_folder() -> list[str]:
-    """T5·T6 — 접근 불가 경로 (2026-09-19 실사고).
+    """T5·T6 — 접근 불가 경로 (실제로 일어난 사고).
 
     SSH 세션의 RedirectionGuard 가 클라우드 드라이브로 가는 junction 통과를 막자(WinError 448),
     os.walk 가 그 폴더를 조용히 건너뛰어 살아 있는 쌍이 고아 후보가 됐고, 고아 판정의
@@ -64,7 +65,7 @@ def test_unreachable_folder() -> list[str]:
     real_listdir = os.listdir
     real_exists = Path.exists
     with tempfile.TemporaryDirectory() as td:
-        root = Path(td)
+        root = Path(td).resolve()
         (root / "CLAUDE.md").write_text("# 루트\n", encoding="utf-8")
         mod = load_module(root)
         blocked = root / "막힌폴더"
@@ -132,7 +133,7 @@ def test_unreachable_folder() -> list[str]:
 def main() -> int:
     failures = []
     with tempfile.TemporaryDirectory() as td:
-        root = Path(td)
+        root = Path(td).resolve()
         sub_nfc = unicodedata.normalize("NFC", "강연폴더")
         sub_nfd = unicodedata.normalize("NFD", "강연폴더")
         (root / "CLAUDE.md").write_text("# 루트 정본\n", encoding="utf-8")
