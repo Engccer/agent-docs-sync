@@ -12,7 +12,7 @@
 
 ## 정본을 지우지 않는 가드
 
-2026-09-27 스킬 감사에서 가짜 HOME으로 재현했다: macOS에서 agy 루트의 실제 폴더가 확인 없이 지워졌고(allowlist 밖이면 정리, 안이면 symlink로 교체, 종료 코드 0), `~/.gemini/config/skills`를 `~/.claude/skills`에 링크하자 allowlist 밖 정본 스킬이 통째로 지워졌다(리뷰 2라운드: agy 루트를 `~/.agents/skills`에 링크해도 그 너머 정본이 지워졌다). 같은 감사에서 `.claude/skills/`의 symlink 스킬이 `.agents/skills/`를 가리키는 역전 환경은 실제 파일을 지우고도 종료 코드 0이었고, `.env`·`secrets.yaml`이 생성물로 복제됐다. 1.2.0에서 네 경우 모두 코드 가드와 시험(`tests/test_sync_agent_docs.py` T7·T8, `tests/test_sync_agy_skills.py` A1~A10)으로 막았다.
+2026-09-27 스킬 감사에서 가짜 HOME으로 재현했다: macOS에서 agy 루트의 실제 폴더가 확인 없이 지워졌고(allowlist 밖이면 정리, 안이면 symlink로 교체, 종료 코드 0), `~/.gemini/config/skills`를 `~/.claude/skills`에 링크하자 allowlist 밖 정본 스킬이 통째로 지워졌다(리뷰 2라운드: agy 루트를 `~/.agents/skills`에 링크해도 그 너머 정본이 지워졌다). 같은 감사에서 `.claude/skills/`의 symlink 스킬이 `.agents/skills/`를 가리키는 역전 환경은 실제 파일을 지우고도 종료 코드 0이었고, `.env`·`secrets.yaml`이 생성물로 복제됐다. 첫 가드(최상위 symlink 스킬, agy 루트 링크, 개별 경우)는 시험이 겨냥한 모양만 막았고, 안전 커밋 리뷰가 같은 결과로 가는 옆 경로를 찾았다: 스킬 폴더 통째 역전(여기서는 `.env*` 제외가 삭제 범위를 넓혔다), `--force` 정리, 상위 경로 링크, 대소문자만 다른 링크, 제외 대상만 다른 폴더의 "같은 내용" 판정. 그래서 경우를 덧대지 않고 원칙 둘로 다시 짰다: 프로젝트 레벨은 "원본·생성물 트리가 실체로 겹치거나 원본 안에 따라가지 못하는 폴더 링크가 있으면 멈춤", 사용자 레벨은 "지우기 전 정본 실체와 같거나 조상·자손인지 파일 동일성으로 확인". 시험 `tests/test_sync_agent_docs.py` T7~T14, `tests/test_sync_agy_skills.py` A1~A18과 가드를 하나씩 되돌리는 변이 20개로 확인했다.
 
 ## 드리프트 가드 (Windows 전용)
 

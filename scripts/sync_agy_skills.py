@@ -18,6 +18,8 @@ sync_agent_docs.py 가 "프로젝트 레벨"(CLAUDE.md → AGENTS.md, .claude/sk
   agy 쪽 복사본이 수정됐으면 덮어쓰지도 삭제하지도 않고 건너뛴다(--force 로 무시).
 - 실제 폴더 보호(macOS): agy 루트의 실제 폴더는 정본과 같을 때만 링크로 바꾸고, 다르거나
   allowlist 밖이면 지우지 않고 건너뛴다(--force 로 무시).
+- 정본 실체 보호: 지우거나 바꾸려는 agy 루트 안 실제 폴더가 ~/.claude/skills 의 어느 항목의
+  실체와 같거나 그 조상·자손이면(파일 동일성으로 판정) --force 여도 건드리지 않는다.
 - agy 루트 자체가 링크이거나 정본 루트와 겹치면 아무것도 하지 않고 종료 1.
 
 사용법:
@@ -60,12 +62,12 @@ MANIFEST_PATH = HOME / ".gemini" / "agy-sync-manifest.json"
 IS_WINDOWS = os.name == "nt"
 
 # sync_agent_docs.py 의 SKILL_EXCLUDE_* 와 같은 취지의 정책(자격증명·캐시·OS 잡파일 제외, 여기는 venv 도 제외).
-EXCLUDE_DIRS = {"credentials", "__pycache__", ".git", ".idea", "node_modules", ".venv", "venv"}
+EXCLUDE_DIRS = {"credentials", "secrets", "__pycache__", ".git", ".idea", "node_modules", ".venv", "venv"}
 EXCLUDE_FILES = {"desktop.ini", ".DS_Store", "accounts.json"}
 EXCLUDE_GLOBS = (
     "*.pyc", "*.pyo",
     "*token*.json", "client_secret*.json", "*.token", "*.key", "*.pem",
-    ".env*", "secrets*",
+    ".env", ".env.*", "secrets.*",
 )
 
 LIST_HEADER = """\
@@ -84,7 +86,8 @@ def is_excluded(name: str, is_dir: bool) -> bool:
     if name in EXCLUDE_FILES:
         return True
     from fnmatch import fnmatch
-    return any(fnmatch(name, g) for g in EXCLUDE_GLOBS)
+    low = name.lower()  # .ENV·Secrets.yaml 도 제외
+    return any(fnmatch(low, g) for g in EXCLUDE_GLOBS)
 
 
 def copy_filter(src_dir: str, names: list[str]) -> set[str]:
@@ -106,13 +109,47 @@ def is_link_dir(p: Path) -> bool:
     return p.is_symlink() or (hasattr(p, "is_junction") and p.is_junction())
 
 
-def hash_tree(root: Path) -> dict[str, str]:
-    """제외 규칙을 적용해 {상대경로: sha256} 를 만든다(복사되는 파일 집합과 동일)."""
+def same_or_inside(path: Path, base: Path) -> bool:
+    """path 의 실체가 base 의 실체와 같거나 그 안에 있는가. 경로 문자열이 아니라 파일 동일성
+    (st_dev·st_ino)으로 비교해 대소문자만 다른 링크(대소문자 무시 파일시스템)도 잡는다."""
+    try:
+        b = os.stat(base)
+    except OSError:
+        return False
+    real = Path(os.path.realpath(path))
+    for q in (real, *real.parents):
+        try:
+            s = os.stat(q)
+        except OSError:
+            continue
+        if (s.st_dev, s.st_ino) == (b.st_dev, b.st_ino):
+            return True
+    return False
+
+
+def canonical_entities() -> list[Path]:
+    """~/.claude/skills 의 모든 항목(allowlist 와 무관)과 그 루트. 지우기 전 보호 대상."""
+    out = [CANONICAL_ROOT]
+    for e in CANONICAL_ROOT.iterdir():
+        if e.exists():
+            out.append(e)
+    return out
+
+
+def touches_canonical(p: Path, protected: list[Path]) -> bool:
+    """p(agy 루트 안 실제 폴더)를 지우면 정본이 사라지는가: 정본 실체와 같거나 그 조상·자손."""
+    return any(same_or_inside(p, c) or same_or_inside(c, p) for c in protected)
+
+
+def hash_tree(root: Path, apply_excludes: bool = True) -> dict[str, str]:
+    """{상대경로: sha256} 를 만든다. 기본은 제외 규칙 적용(복사되는 파일 집합과 동일).
+    apply_excludes=False 면 .git·.env 등 제외 대상까지 전부 센다(지워도 되는지 판정할 때)."""
     hashes: dict[str, str] = {}
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if not is_excluded(d, True)]
+        if apply_excludes:
+            dirnames[:] = [d for d in dirnames if not is_excluded(d, True)]
         for fn in sorted(filenames):
-            if is_excluded(fn, False):
+            if apply_excludes and is_excluded(fn, False):
                 continue
             full = Path(dirpath) / fn
             digest = hashlib.sha256()
@@ -210,6 +247,7 @@ def materialize_windows(
     manifest: dict[str, dict[str, str]],
     check: bool,
     force: bool,
+    protected: list[Path],
 ) -> tuple[str, str | None]:
     """정본을 물리 복사로 반영한다. (동작 문자열, 드리프트 사유|None) 를 반환.
 
@@ -217,9 +255,11 @@ def materialize_windows(
     agy 쪽 복사본에 가해진 수정을 지운다. manifest(마지막 동기화 해시)와 3자 비교해
     복사본이 수정됐으면 덮어쓰지 않고 건너뛴다(--force 로 무시).
     """
+    dst_is_link = is_link_dir(dst)
+    if dst.is_dir() and not dst_is_link and touches_canonical(dst, protected):
+        return ("정본 실체(건너뜀)", f"agy 루트의 {dst.name} 이(가) 정본 실체라 건드리지 않음")
     src_hashes = hash_tree(src)
     baseline = manifest.get(name)
-    dst_is_link = is_link_dir(dst)
     dst_hashes = hash_tree(dst) if dst.is_dir() and not dst_is_link else None
 
     if dst_hashes is not None and dst_hashes == src_hashes:
@@ -255,20 +295,27 @@ def materialize_windows(
     return ("복사", None)
 
 
-def materialize_posix(src: Path, dst: Path, check: bool, force: bool) -> tuple[str, str | None]:
+def materialize_posix(
+    src: Path, dst: Path, check: bool, force: bool, protected: list[Path],
+) -> tuple[str, str | None]:
     """POSIX: agy 가 symlink 를 따라가므로 링크로 충분하다. (동작 문자열, 건너뛴 사유|None) 를 반환.
 
     agy 루트에 이미 실제 폴더(agy 에 직접 설치했거나 손으로 만든 스킬)가 있으면, 정본과
-    내용이 같을 때만 링크로 바꾸고 다르면 지우지 않고 건너뛴다(--force 로 무시).
+    내용이 같을 때만(.git·.env 등 제외 대상까지 전부 비교) 링크로 바꾸고 다르면 지우지 않고
+    건너뛴다(--force 로 무시). 그 폴더가 정본 실체면 --force 여도 건드리지 않는다.
     """
     if dst.is_symlink() and Path(os.readlink(dst)) == src:
         return ("이미 최신", None)
     real_dir = dst.is_dir() and not dst.is_symlink()
-    if real_dir and not force and hash_tree(dst) != hash_tree(src):
-        return (
-            "실제 폴더(건너뜀)",
-            f"agy 루트에 정본과 다른 실제 폴더가 있음: {describe_diff(hash_tree(src), hash_tree(dst))}",
-        )
+    if real_dir and touches_canonical(dst, protected):
+        return ("정본 실체(건너뜀)", f"agy 루트의 {dst.name} 이(가) 정본 실체라 건드리지 않음")
+    if real_dir and not force:
+        src_all, dst_all = hash_tree(src, False), hash_tree(dst, False)
+        if src_all != dst_all:
+            return (
+                "실제 폴더(건너뜀)",
+                f"agy 루트에 정본과 다른 실제 폴더가 있음: {describe_diff(src_all, dst_all)}",
+            )
     if check:
         return ("symlink(예정)", None)
     if real_dir:
@@ -334,20 +381,24 @@ def main() -> int:
     # agy 루트 자체가 링크면 가리키는 곳의 실제 폴더를 정리·교체 대상으로 보게 된다(정본일 수 있다).
     if is_link_dir(AGY_ROOT):
         print(f"오류: agy 루트({AGY_ROOT})가 링크다 → {os.path.realpath(AGY_ROOT)}", file=sys.stderr)
-        print("  링크 자체만 지우고(대상은 건드리지 말 것) 실제 폴더로 다시 만든 뒤 실행하라.", file=sys.stderr)
+        print("  링크 자체만 지우고(대상은 건드리지 말 것) 실제 폴더로 다시 만든 뒤 실행하라:", file=sys.stderr)
+        print(f"    macOS: rm \"{AGY_ROOT}\"   (끝 슬래시·-r 없이)", file=sys.stderr)
+        print(f"    Windows: rmdir \"{AGY_ROOT}\"   (/s 없이)", file=sys.stderr)
         return 1
 
     # agy 루트와 정본 루트가 겹치면(한쪽이 다른 쪽을 가리키는 링크 등) 정리·교체가 정본을 지운다.
-    agy_real = os.path.realpath(AGY_ROOT)
-    canon_real = os.path.realpath(CANONICAL_ROOT)
-    try:
-        overlap = os.path.commonpath([agy_real, canon_real]) in (agy_real, canon_real)
-    except ValueError:
-        overlap = False  # 다른 드라이브
-    if overlap:
-        print(f"오류: agy 루트({AGY_ROOT} → {agy_real})가 정본 루트({canon_real})와 겹친다.", file=sys.stderr)
-        print("  agy 루트는 정본을 가리키지 않는 별도 폴더여야 한다. 링크를 지우고 다시 실행하라.", file=sys.stderr)
+    if AGY_ROOT.exists() and (
+        same_or_inside(AGY_ROOT, CANONICAL_ROOT) or same_or_inside(CANONICAL_ROOT, AGY_ROOT)
+    ):
+        print(
+            f"오류: agy 루트({AGY_ROOT} → {os.path.realpath(AGY_ROOT)})와 정본 루트"
+            f"({CANONICAL_ROOT} → {os.path.realpath(CANONICAL_ROOT)})가 겹친다.",
+            file=sys.stderr,
+        )
+        print("  둘 중 링크인 쪽을 찾아 그 링크 자체만 지우고, 두 폴더를 따로 둔 뒤 실행하라.", file=sys.stderr)
         return 1
+
+    protected = canonical_entities()
 
     if not args.check:
         AGY_ROOT.mkdir(parents=True, exist_ok=True)
@@ -367,12 +418,6 @@ def main() -> int:
 
         # junction(Windows)·symlink(macOS) 어느 쪽이든 실체까지 해석한다.
         src = link.resolve()
-        try:
-            src.relative_to(Path(agy_real))
-            skipped.append(f"{name}: 정본 실체({src})가 agy 루트 안에 있음 — 반영하지 않음")
-            continue
-        except ValueError:
-            pass
         warn = validate(name, src)
         if warn:
             warnings.append(f"{name}: {warn}")
@@ -381,7 +426,7 @@ def main() -> int:
             try:
                 action, drift = materialize_windows(
                     name, src, AGY_ROOT / name, manifest,
-                    args.check, force_all or name in force_names,
+                    args.check, force_all or name in force_names, protected,
                 )
             except OSError as exc:
                 # 잠긴 파일·부분 삭제 등으로 한 스킬이 실패해도 나머지 반영과
@@ -396,7 +441,7 @@ def main() -> int:
                 done += 1
         else:
             action, drift = materialize_posix(
-                src, AGY_ROOT / name, args.check, force_all or name in force_names,
+                src, AGY_ROOT / name, args.check, force_all or name in force_names, protected,
             )
             if drift:
                 skipped.append(f"{name}: {drift}")
@@ -410,6 +455,9 @@ def main() -> int:
     if AGY_ROOT.is_dir():
         for entry in AGY_ROOT.iterdir():
             if entry.name in wanted:
+                continue
+            if entry.is_dir() and not is_link_dir(entry) and touches_canonical(entry, protected):
+                skipped.append(f"{entry.name}: allowlist 밖이지만 정본 실체라 지우지 않음")
                 continue
             # 삭제도 덮어쓰기와 같은 데이터 손실 경로다: Windows 물리 폴더는
             # 삭제 전에 드리프트 검사를 거친다(링크·파일 엔트리는 데이터가 없다).
@@ -471,7 +519,7 @@ def main() -> int:
             print(f"  - {s}")
         print("  (agy 쪽 수정을 정본에 반영한 뒤 재실행하면 자동 해소되고,")
         print("   폐기해도 되면 --force <스킬명> 으로 그 스킬만 덮어써라.")
-        print("   '정본 실체가 agy 루트 안' 은 --force 로 풀리지 않는다. 정본을 agy 루트 밖으로 옮겨라.)")
+        print("   '정본 실체' 항목은 --force 로도 풀리지 않는다. 정본을 agy 루트 밖으로 옮겨라.)")
     if warnings:
         print("경고:")
         for w in warnings:

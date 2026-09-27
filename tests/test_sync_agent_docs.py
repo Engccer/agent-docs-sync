@@ -14,7 +14,7 @@ NFD 별형 경로를 NFC 실파일로 해석(resolve)하므로 **살아 있는 A
       상태에 NFD 구키가 잔존하지 않는다
   T4  진짜 고아(CLAUDE.md 삭제됨)는 여전히 정리된다
   T5·T6  접근 불가 경로 (test_unreachable_folder 참조)
-  T7~T9  스킬 미러링 안전 가드, 고아 정리 최종 가드 (test_skill_safety 참조)
+  T7~T14 스킬 미러링 안전 가드, 고아 정리 최종 가드 (test_skill_safety 참조)
 
 실행: python tests/test_sync_agent_docs.py  (표준 라이브러리만 사용, 종료 코드 0=통과)
 """
@@ -144,12 +144,17 @@ def run_main(mod, *argv: str) -> int:
 
 
 def test_skill_safety() -> list[str]:
-    """T7~T9 — 스킬 미러링 안전 가드와 고아 정리 최종 가드.
+    """T7~T14 — 스킬 미러링 안전 가드와 고아 정리 최종 가드.
 
       T7  .claude/skills/ 최상위에 symlink 가 있으면(정본 방향 역전 의심) 미러링을 멈추고
           .agents/skills/ 의 파일을 지우지 않으며 종료 코드 2 를 낸다
       T8  .env*·secrets* 비밀 파일은 미러링하지 않고, 예전에 복제된 것은 생성물에서 지운다
       T9  키 비교가 빗나가도 형제 CLAUDE.md 가 살아 있으면 고아로 지우지 않는다(has_sibling_canonical)
+      T10 스킬 폴더 통째 역전(.claude/skills·.agents/skills·.claude 링크)도 멈추고 원본을 지우지 않는다
+      T11 스킬 안쪽 폴더 symlink 도 멈춘다
+      T12 secrets/ 폴더·대소문자 변형은 제외하고 secrets_util.py 같은 코드 파일은 미러링한다
+      T13 밖을 가리키는 중첩 symlink 도 멈춘다(옛 미러 보존)
+      T14 대소문자만 다른 역전 링크도 겹침으로 알아본다(대소문자 무시 파일시스템에서만)
     """
     failures = []
     if os.name == "nt":
@@ -211,6 +216,118 @@ def test_skill_safety() -> list[str]:
         run_main(mod)
         if not (outside / "AGENTS.md").exists():
             failures.append("T9 실패: 형제 CLAUDE.md 가 살아 있는 AGENTS.md 가 고아로 지워짐")
+
+    # T10: 스킬 폴더 통째 역전(세 모양)도 멈추고 원본 쪽 파일을 하나도 지우지 않는다
+    for shape in ("claude-skills->agents", "agents-skills->claude", "claude->agents"):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            (root / "CLAUDE.md").write_text("# 루트\n", encoding="utf-8")
+            if shape == "agents-skills->claude":
+                real = root / ".claude" / "skills"
+            else:
+                real = root / ".agents" / "skills"
+            k = real / "k"
+            (k / ".git").mkdir(parents=True)
+            (k / "credentials").mkdir()
+            (k / "SKILL.md").write_text(SKILL_MD.format(name="k"), encoding="utf-8")
+            (k / ".env").write_text("KEY=x\n", encoding="utf-8")
+            (k / ".git" / "HEAD").write_text("ref\n", encoding="utf-8")
+            (k / "credentials" / "token.json").write_text("{}\n", encoding="utf-8")
+            if shape == "claude-skills->agents":
+                (root / ".claude").mkdir()
+                (root / ".claude" / "skills").symlink_to(real, target_is_directory=True)
+            elif shape == "agents-skills->claude":
+                (root / ".agents").mkdir()
+                (root / ".agents" / "skills").symlink_to(real, target_is_directory=True)
+            else:
+                (root / ".claude").symlink_to(root / ".agents", target_is_directory=True)
+            mod = load_module(root)
+            code = run_main(mod)
+            for rel in (".env", ".git/HEAD", "credentials/token.json", "SKILL.md"):
+                if not (k / rel).exists():
+                    failures.append(f"T10 실패({shape}): 원본 {rel} 이 지워짐")
+            if (real / "_GENERATED.md").exists():
+                failures.append(f"T10 실패({shape}): 원본 쪽에 _GENERATED.md 를 씀")
+            if code != 2:
+                failures.append(f"T10 실패({shape}): 종료 코드 {code} (기대 2)")
+
+    # T11: 스킬 안쪽(중첩) 폴더 symlink 도 멈춘다
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td).resolve()
+        (root / "CLAUDE.md").write_text("# 루트\n", encoding="utf-8")
+        lib = root / ".agents" / "skills" / "k" / "lib"
+        lib.mkdir(parents=True)
+        (lib / "real.py").write_text("x = 1\n", encoding="utf-8")
+        k = root / ".claude" / "skills" / "k"
+        k.mkdir(parents=True)
+        (k / "SKILL.md").write_text(SKILL_MD.format(name="k"), encoding="utf-8")
+        (k / "lib").symlink_to(lib, target_is_directory=True)
+        mod = load_module(root)
+        code = run_main(mod)
+        if not (lib / "real.py").exists():
+            failures.append("T11 실패: 중첩 symlink 너머의 실제 파일이 지워짐")
+        if code != 2:
+            failures.append(f"T11 실패: 종료 코드 {code} (기대 2)")
+
+    # T12: secrets/ 폴더와 대소문자 변형은 제외, 이름에 secrets 가 든 코드 파일은 미러링
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td).resolve()
+        (root / "CLAUDE.md").write_text("# 루트\n", encoding="utf-8")
+        k = root / ".claude" / "skills" / "k"
+        (k / "secrets").mkdir(parents=True)
+        (k / "lib").mkdir()
+        (k / "SKILL.md").write_text(SKILL_MD.format(name="k"), encoding="utf-8")
+        (k / "secrets" / "api.json").write_text("{}\n", encoding="utf-8")
+        (k / "lib" / "secrets_util.py").write_text("x = 1\n", encoding="utf-8")
+        (k / ".ENV").write_text("KEY=x\n", encoding="utf-8")
+        mod = load_module(root)
+        run_main(mod)
+        out = root / ".agents" / "skills" / "k"
+        if (out / "secrets" / "api.json").exists():
+            failures.append("T12 실패: secrets/ 폴더가 미러링됨")
+        if (out / ".ENV").exists():
+            failures.append("T12 실패: 대문자 .ENV 가 미러링됨")
+        if not (out / "lib" / "secrets_util.py").exists():
+            failures.append("T12 실패: 코드 파일 secrets_util.py 가 제외됨")
+
+    # T13: 밖을 가리키는 중첩 symlink 도 멈춘다(그대로 두면 옛 미러가 고아로 지워진다)
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td).resolve()
+        root = base / "proj"
+        (root / ".claude" / "skills" / "k").mkdir(parents=True)
+        (root / "CLAUDE.md").write_text("# 루트\n", encoding="utf-8")
+        (root / ".claude" / "skills" / "k" / "SKILL.md").write_text(SKILL_MD.format(name="k"), encoding="utf-8")
+        ext = base / "ext-lib"
+        ext.mkdir()
+        (ext / "a.py").write_text("x = 1\n", encoding="utf-8")
+        (root / ".claude" / "skills" / "k" / "lib").symlink_to(ext, target_is_directory=True)
+        old = root / ".agents" / "skills" / "k" / "lib"
+        old.mkdir(parents=True)
+        (old / "a.py").write_text("x = 1\n", encoding="utf-8")
+        mod = load_module(root)
+        code = run_main(mod)
+        if not (old / "a.py").exists():
+            failures.append("T13 실패: 밖을 가리키는 중첩 symlink 때문에 옛 미러가 지워짐")
+        if code != 2:
+            failures.append(f"T13 실패: 종료 코드 {code} (기대 2)")
+
+    # T14: 대소문자만 다른 경로로 건 역전 링크(대소문자 무시 파일시스템)도 겹침으로 알아본다
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td).resolve()
+        k = root / ".agents" / "skills" / "k"
+        (k / ".git").mkdir(parents=True)
+        (k / "SKILL.md").write_text(SKILL_MD.format(name="k"), encoding="utf-8")
+        (k / ".git" / "HEAD").write_text("ref\n", encoding="utf-8")
+        if (root / ".AGENTS").exists():  # 대소문자 무시 파일시스템에서만 의미가 있다
+            (root / "CLAUDE.md").write_text("# 루트\n", encoding="utf-8")
+            (root / ".claude").mkdir()
+            (root / ".claude" / "skills").symlink_to(root / ".AGENTS" / "skills", target_is_directory=True)
+            mod = load_module(root)
+            code = run_main(mod)
+            if not (k / ".git" / "HEAD").exists():
+                failures.append("T14 실패: 대소문자 변형 역전 링크에서 원본 .git 이 지워짐")
+            if code != 2:
+                failures.append(f"T14 실패: 종료 코드 {code} (기대 2)")
     return failures
 
 

@@ -39,7 +39,7 @@ sync_agent_docs.py — 에이전트 지침·스킬 단방향 동기화
 
 종료 코드:
   0  전부 최신이거나 정상 반영됨(발산·스킬 검증 경고 없음)
-  2  발산 파일이나 접근 불가 경로를 건너뜀, symlink 스킬 때문에 스킬 미러링을 건너뜀,
+  2  발산 파일이나 접근 불가 경로를 건너뜀, 원본을 지울 수 있는 링크 때문에 스킬 미러링을 건너뜀,
      또는 스킬 frontmatter 검증 경고가 있음 — 나머지는 정상 동기화됨.
      실패가 아니라 "확인 필요" 신호.
      (무관한 폴더의 발산이 떠 있어도 내가 방금 고친 CLAUDE.md 의 AGENTS.md 는 그대로 생성/갱신된다.)
@@ -97,12 +97,12 @@ SKILLS_DST = ROOT / ".agents" / "skills"
 
 # 보안: 자격증명 디렉터리/파일은 생성물로 복제하지 않는다(노출면·회전 부담 2배 방지).
 # 청결: 캐시·OS 잡파일도 제외.
-SKILL_EXCLUDE_DIRS = {"credentials", "__pycache__", ".git", ".idea", "node_modules", ".venv"}
+SKILL_EXCLUDE_DIRS = {"credentials", "secrets", "__pycache__", ".git", ".idea", "node_modules", ".venv"}
 SKILL_EXCLUDE_FILES = {"desktop.ini", ".DS_Store", "accounts.json"}
 SKILL_EXCLUDE_GLOBS = (
     "*.pyc", "*.pyo",
     "*token*.json", "client_secret*.json", "*.token", "*.key", "*.pem",
-    ".env*", "secrets*",
+    ".env", ".env.*", "secrets.*",
 )
 # 고아 정리에서 "무시"할 OS/캐시 잡파일. Google Drive 는 폴더마다 desktop.ini 를 자동
 # 생성하므로, 이를 고아로 보고 지우면 Drive 가 다시 만들어 매 실행이 churn 된다 → 그냥 둔다.
@@ -382,6 +382,61 @@ def sync_docs(args, state) -> tuple[list[str], bool, list[str]]:
 
 
 # ── 스킬 폴더 동기화 (.claude/skills/ → .agents/skills/) ──────────────────
+def is_excluded_skill_file(fn: str) -> bool:
+    """미러링에서 뺄 파일인가. 패턴은 대소문자를 무시한다(.ENV·Secrets.yaml 도 제외)."""
+    low = fn.lower()
+    return fn in SKILL_EXCLUDE_FILES or any(fnmatch(low, g) for g in SKILL_EXCLUDE_GLOBS)
+
+
+def is_link_dir(p: Path) -> bool:
+    """symlink 또는 Windows junction 인가(junction 판정 is_junction 은 3.12+)."""
+    return p.is_symlink() or (hasattr(p, "is_junction") and p.is_junction())
+
+
+def same_or_inside(path: Path, base: Path) -> bool:
+    """path 의 실체가 base 의 실체와 같거나 그 안에 있는가. 경로 문자열이 아니라 파일 동일성
+    (st_dev·st_ino)으로 비교해 대소문자만 다른 링크(대소문자 무시 파일시스템)도 잡는다."""
+    try:
+        b = os.stat(base)
+    except OSError:
+        return False
+    real = Path(os.path.realpath(path))
+    for q in (real, *real.parents):
+        try:
+            s = os.stat(q)
+        except OSError:
+            continue
+        if (s.st_dev, s.st_ino) == (b.st_dev, b.st_ino):
+            return True
+    return False
+
+
+def skill_direction_problems() -> list[str]:
+    """스킬 미러링이 원본을 지울 수 있는 링크 구성을 찾아 설명 목록으로 돌려준다(빈 목록 = 안전).
+
+    - .claude/skills 와 .agents/skills 가 실체로 겹친다(둘 중 하나나 상위 .claude/.agents 가
+      다른 쪽을 가리키는 링크): 고아 정리가 미러링 제외 파일(.git·.env·credentials 등)을
+      "정본에 없음"으로 보고 원본에서 지운다.
+    - .claude/skills 안(어느 깊이든)의 폴더 symlink: walk 가 따라가지 않아 그 내용이 원본 목록에서
+      빠지고 고아 정리가 .agents/skills 의 같은 경로를 지운다(역전 환경이면 실제 정본).
+    - .claude/skills 안의 junction 이 .agents/skills 안을 가리킨다: walk 는 따라가지만 원본과
+      생성물이 같은 파일이 되어 위와 같은 삭제가 난다. 밖을 가리키는 junction 은 정상 미러링된다.
+    """
+    if same_or_inside(SKILLS_SRC, SKILLS_DST) or same_or_inside(SKILLS_DST, SKILLS_SRC):
+        return [f".claude/skills 와 .agents/skills 가 같은 실체를 가리킴 ({os.path.realpath(SKILLS_SRC)})"]
+    problems: list[str] = []
+    for dirpath, dirnames, _filenames in os.walk(SKILLS_SRC):
+        for d in list(dirnames):
+            full = Path(dirpath) / d
+            rel = full.relative_to(SKILLS_SRC).as_posix()
+            if full.is_symlink():
+                problems.append(f"{rel} (symlink → {os.path.realpath(full)})")
+            elif is_link_dir(full) and same_or_inside(full, SKILLS_DST):
+                problems.append(f"{rel} (junction → .agents/skills 안)")
+        dirnames[:] = [d for d in dirnames if d not in SKILL_EXCLUDE_DIRS]
+    return problems
+
+
 def iter_source_skill_files() -> list[Path]:
     """제외 규칙을 적용해 동기화 대상 파일의 상대경로 목록을 돌려준다."""
     files: list[Path] = []
@@ -389,9 +444,7 @@ def iter_source_skill_files() -> list[Path]:
         # 제외 디렉터리는 walk 자체에서 가지치기.
         dirnames[:] = [d for d in dirnames if d not in SKILL_EXCLUDE_DIRS]
         for fn in filenames:
-            if fn in SKILL_EXCLUDE_FILES:
-                continue
-            if any(fnmatch(fn, g) for g in SKILL_EXCLUDE_GLOBS):
+            if is_excluded_skill_file(fn):
                 continue
             rel = (Path(dirpath) / fn).relative_to(SKILLS_SRC)
             files.append(rel)
@@ -413,20 +466,19 @@ def prune_empty_dirs(root: Path) -> None:
 def sync_skills(args) -> tuple[bool, list[str]]:
     """반환: (any_written, linked). 정본을 .agents/skills/ 로 미러링(자격증명 제외).
 
-    linked: .claude/skills/ 최상위의 symlink 스킬 이름. walk 는 symlink 를 따라가지 않아
-    그 내용이 정본 목록에서 빠지고, 고아 정리가 .agents/skills/ 의 같은 이름 파일을 지운다
-    (symlink 가 .agents/skills/ 를 가리키는 역전 환경이면 실제 정본 삭제). 하나라도 있으면
+    linked: 미러링이 원본을 지울 수 있는 링크 구성(skill_direction_problems). 하나라도 있으면
     미러링 전체를 건너뛴다."""
     if not SKILLS_SRC.exists():
         print(f"[건너뜀] 스킬 정본 폴더 없음: {SKILLS_SRC}")
         return False, []
 
-    linked = sorted(p.name for p in SKILLS_SRC.iterdir() if p.is_symlink())
+    linked = skill_direction_problems()
     if linked:
         print(
-            f"[스킬 방향 경고] .claude/skills/ 에 symlink 스킬이 있어 미러링을 건너뜁니다: {', '.join(linked)}\n"
-            "        ↳ .agents/skills/ 를 가리키면 정본 방향이 역전된 환경이라 미러링이 필요 없습니다.\n"
-            "          외부 경로를 가리키면 그 스킬을 실제 폴더로 두어야 미러링됩니다.",
+            "[스킬 방향 경고] 미러링이 원본을 지울 수 있는 링크가 있어 스킬 미러링을 건너뜁니다:\n"
+            + "\n".join(f"          - {x}" for x in linked)
+            + "\n        ↳ .agents/skills/ 를 가리키면 정본 방향이 역전된 환경이라 미러링이 필요 없습니다.\n"
+            "          외부 경로를 가리키는 symlink 는 실제 폴더로 두어야 미러링됩니다.",
             file=sys.stderr,
         )
         return False, linked
@@ -625,7 +677,7 @@ def main() -> int:
         )
     if skill_links:
         print(
-            f"\n[요약] symlink 스킬 {len(skill_links)}개 때문에 스킬 미러링을 건너뜀: "
+            f"\n[요약] 링크 구성 {len(skill_links)}건 때문에 스킬 미러링을 건너뜀: "
             + ", ".join(skill_links)
             + "\n        ↳ 문서 동기화는 정상 완료됨(종료 코드 2 = 확인 필요). 정본 방향을 먼저 확인하세요."
         )

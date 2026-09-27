@@ -10,12 +10,21 @@ POSIX 는 agy 루트에 symlink 만 걸기 때문에 사본이 없다는 전제�
   A4  --force <이름> 이면 실제 폴더도 symlink 로 바꾼다
   A5  allowlist 밖의 symlink 는 지금처럼 정리한다
   A6  agy 루트가 정본 루트를 가리키거나 겹치면 아무것도 하지 않고 종료 1
-  A7  정본 실체가 agy 루트 안에 있으면(정본 링크가 agy 쪽 실제 폴더를 가리킴) 건드리지 않고 건너뛴다
+  A7  정본 실체가 agy 루트 안에 있으면(정본 링크가 agy 쪽 실제 폴더를 가리킴) 건드리지 않고 건너뛴다(종료 2)
   A8  Windows 복사 제외 규칙이 .env*·secrets* 를 거른다
   A9  agy 루트 자체가 링크면 가리키는 곳과 --force 에 상관없이 아무것도 하지 않고 종료 1
   A10 정본 루트가 agy 루트를 가리키는 겹침도 --force 와 상관없이 종료 1
+  A11 정본과 같아 보여도 agy 쪽에만 제외 대상 파일(.env·.git 등)이 있으면 교체하지 않는다
+  A12 allowlist 밖이어도 정본 실체는 --force 로도 지우지 않는다
+  A13 상위 경로 링크로 agy 루트가 정본 실체들 자리여도 --force 로도 지우지 않는다
+  A14 대소문자만 다른 경로의 정본 링크도 정본으로 알아본다(대소문자 무시 파일시스템)
+  A15 이름 없는 --force 는 정본이 아닌 allowlist 밖 실제 폴더를 정리한다
+  A16 Windows 분기(물리 복사)도 정본 실체는 --force 여도 지우지 않는다
+  A17 Windows 분기의 물리 복사는 .env·.ENV.*·secrets/ 를 복사하지 않는다
+  A18 지우려는 폴더 안쪽에 정본 실체가 있으면(조상 방향) --force 여도 지우지 않는다(POSIX·Windows 분기)
 
-실행: python tests/test_sync_agy_skills.py  (표준 라이브러리만 사용, 종료 코드 0=통과. Windows 에서는 건너뜀)
+실행: python tests/test_sync_agy_skills.py  (표준 라이브러리만 사용, 종료 코드 0=통과. symlink 를 만들므로 Windows 에서는 건너뜀.
+      A16·A17 은 IS_WINDOWS 를 켜서 Windows 분기 코드를 POSIX 에서 돌린다)
 """
 import importlib.util
 import os
@@ -212,6 +221,131 @@ def main() -> int:
                 failures.append(f"A8 실패: 비밀 파일 {secret} 이 복사 제외 대상이 아님")
         if mod.is_excluded("config.yaml", False):
             failures.append("A8 실패: 일반 파일 config.yaml 이 제외됨")
+
+    # A11: 정본과 같아 보여도 agy 쪽에만 제외 대상 파일(.env·.git·credentials)이 있으면 교체하지 않는다
+    with tempfile.TemporaryDirectory() as td:
+        home = make_home(td, ["a"])
+        mod = load_module(home)
+        dst = mod.AGY_ROOT / "a"
+        (dst / ".git").mkdir(parents=True)
+        (dst / "SKILL.md").write_text(SKILL_MD.format(name="a"), encoding="utf-8")
+        (dst / ".env").write_text("KEY=x\n", encoding="utf-8")
+        (dst / ".git" / "ORIG").write_text("x\n", encoding="utf-8")
+        code = run_main(mod)
+        if dst.is_symlink() or not (dst / ".env").exists():
+            failures.append("A11 실패: agy 쪽에만 있는 .env·.git 이 교체로 지워짐")
+        if code != 2:
+            failures.append(f"A11 실패: 종료 코드 {code} (기대 2)")
+
+    # A12: 정본 링크가 agy 루트 안 실제 폴더를 가리키고 allowlist 밖이면 --force 여도 지우지 않는다
+    with tempfile.TemporaryDirectory() as td:
+        home = make_home(td, ["a"])
+        mod = load_module(home)
+        real = mod.AGY_ROOT / "x"
+        real.mkdir()
+        (real / "SKILL.md").write_text(SKILL_MD.format(name="x"), encoding="utf-8")
+        (mod.CANONICAL_ROOT / "x").symlink_to(real, target_is_directory=True)
+        code = run_main(mod, "--force")
+        if not (real / "SKILL.md").exists():
+            failures.append("A12 실패: --force 정리가 agy 루트 안의 정본 실체를 지움")
+        if code != 2:
+            failures.append(f"A12 실패: 종료 코드 {code} (기대 2)")
+
+    # A13: 상위 경로(~/.gemini/config)가 링크여서 agy 루트가 정본 실체들이 있는 곳이 돼도 --force 여도 지우지 않는다
+    with tempfile.TemporaryDirectory() as td:
+        home = make_home(td, [])
+        mod = load_module(home)
+        other = home / ".agents" / "skills"
+        for n in ("kx", "ky"):
+            (other / n).mkdir(parents=True)
+            (other / n / "SKILL.md").write_text(SKILL_MD.format(name=n), encoding="utf-8")
+            mod.CANONICAL_ROOT.mkdir(parents=True, exist_ok=True)
+            (mod.CANONICAL_ROOT / n).symlink_to(other / n, target_is_directory=True)
+        (home / ".gemini" / "agy-skills.txt").write_text("kx\n", encoding="utf-8")
+        mod.AGY_ROOT.rmdir()
+        (home / ".gemini" / "config").rmdir()
+        (home / ".gemini" / "config").symlink_to(home / ".agents", target_is_directory=True)
+        run_main(mod, "--force")
+        for n in ("kx", "ky"):
+            if (other / n).is_symlink() or not (other / n / "SKILL.md").exists():
+                failures.append(f"A13 실패: 상위 경로 링크에서 정본 {n} 이 지워지거나 링크로 바뀜")
+
+    # A14: 대소문자만 다른 경로로 건 정본 링크(대소문자 무시 파일시스템)도 정본으로 알아본다
+    with tempfile.TemporaryDirectory() as td:
+        home = make_home(td, ["x"])
+        mod = load_module(home)
+        upper = Path(str(mod.AGY_ROOT).replace("/.gemini/", "/.GEMINI/"))
+        if upper.exists():  # 대소문자 무시 파일시스템에서만 의미가 있다
+            real = mod.AGY_ROOT / "x"
+            real.mkdir()
+            (real / "SKILL.md").write_text(SKILL_MD.format(name="x"), encoding="utf-8")
+            import shutil as _sh
+            _sh.rmtree(mod.CANONICAL_ROOT / "x")
+            (mod.CANONICAL_ROOT / "x").symlink_to(upper / "x", target_is_directory=True)
+            run_main(mod)
+            if real.is_symlink() or not (real / "SKILL.md").exists():
+                failures.append("A14 실패: 대소문자 변형 링크의 정본 실체가 지워지거나 자기 링크로 바뀜")
+
+    # A15: 이름 없는 --force 는 allowlist 밖 실제 폴더(정본 실체가 아닌 것)를 정리한다(문서화된 동작)
+    with tempfile.TemporaryDirectory() as td:
+        home = make_home(td, ["a"])
+        mod = load_module(home)
+        native = mod.AGY_ROOT / "native"
+        native.mkdir()
+        (native / "SKILL.md").write_text(SKILL_MD.format(name="native"), encoding="utf-8")
+        code = run_main(mod, "--force")
+        if native.exists():
+            failures.append("A15 실패: --force 인데 allowlist 밖 실제 폴더가 정리되지 않음")
+        if code != 0:
+            failures.append(f"A15 실패: 종료 코드 {code} (기대 0)")
+
+    # A16: Windows 분기(물리 복사)도 정본 실체는 --force 여도 지우지 않는다
+    with tempfile.TemporaryDirectory() as td:
+        home = make_home(td, ["a"])
+        mod = load_module(home)
+        mod.IS_WINDOWS = True
+        real = mod.AGY_ROOT / "x"
+        real.mkdir()
+        (real / "SKILL.md").write_text(SKILL_MD.format(name="x"), encoding="utf-8")
+        (mod.CANONICAL_ROOT / "x").symlink_to(real, target_is_directory=True)
+        (home / ".gemini" / "agy-skills.txt").write_text("a\nx\n", encoding="utf-8")
+        run_main(mod, "--force")
+        if real.is_symlink() or not (real / "SKILL.md").exists():
+            failures.append("A16 실패: Windows 분기에서 정본 실체가 지워지거나 바뀜")
+
+    # A17: Windows 분기의 물리 복사는 .env·secrets/ 를 복사하지 않는다
+    with tempfile.TemporaryDirectory() as td:
+        home = make_home(td, ["a"])
+        mod = load_module(home)
+        mod.IS_WINDOWS = True
+        src = mod.CANONICAL_ROOT / "a"
+        (src / "secrets").mkdir()
+        (src / ".env").write_text("KEY=x\n", encoding="utf-8")
+        (src / ".ENV.local").write_text("KEY=x\n", encoding="utf-8")
+        (src / "secrets" / "k.json").write_text("{}\n", encoding="utf-8")
+        code = run_main(mod)
+        dst = mod.AGY_ROOT / "a"
+        if not (dst / "SKILL.md").exists():
+            failures.append("A17 실패: Windows 분기 복사가 되지 않음")
+        if (dst / ".env").exists() or (dst / ".ENV.local").exists() or (dst / "secrets").exists():
+            failures.append("A17 실패: Windows 분기 복사에 .env·secrets/ 가 들어감")
+        if code != 0:
+            failures.append(f"A17 실패: 종료 코드 {code} (기대 0)")
+
+    # A18: 지우려는 폴더 "안쪽"에 다른 정본 실체가 있으면(조상 방향) --force 여도 지우지 않는다(두 분기)
+    for windows in (False, True):
+        with tempfile.TemporaryDirectory() as td:
+            home = make_home(td, ["a"])
+            mod = load_module(home)
+            mod.IS_WINDOWS = windows
+            outer = mod.AGY_ROOT / "a"
+            inner = outer / "inner"
+            inner.mkdir(parents=True)
+            (inner / "SKILL.md").write_text(SKILL_MD.format(name="z"), encoding="utf-8")
+            (mod.CANONICAL_ROOT / "z").symlink_to(inner, target_is_directory=True)
+            run_main(mod, "--force")
+            if not (inner / "SKILL.md").exists():
+                failures.append(f"A18 실패(windows={windows}): 정본 실체를 품은 폴더가 --force 로 지워짐")
 
     if failures:
         print("\n".join(failures))
