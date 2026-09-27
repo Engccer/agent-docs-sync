@@ -14,8 +14,11 @@ sync_agent_docs.py 가 "프로젝트 레벨"(CLAUDE.md → AGENTS.md, .claude/sk
 - Windows 의 agy 는 junction 을 따라가지 않아 물리 복사하고, macOS 는 symlink 를 건다.
 - 정본 경로는 ~/.claude/skills/<name> 을 realpath 로 해석해 머신별 하드코딩을 피한다.
 - 노출할 스킬은 allowlist(~/.gemini/agy-skills.txt)로 고른다. 없으면 --init 로 템플릿을 만든다.
-- 드리프트 가드(Windows 전용): 마지막 동기화 해시(~/.gemini/agy-sync-manifest.json)와 3자 비교해
+- 드리프트 가드(Windows): 마지막 동기화 해시(~/.gemini/agy-sync-manifest.json)와 3자 비교해
   agy 쪽 복사본이 수정됐으면 덮어쓰지도 삭제하지도 않고 건너뛴다(--force 로 무시).
+- 실제 폴더 보호(macOS): agy 루트의 실제 폴더는 정본과 같을 때만 링크로 바꾸고, 다르거나
+  allowlist 밖이면 지우지 않고 건너뛴다(--force 로 무시).
+- agy 루트 자체가 링크이거나 정본 루트와 겹치면 아무것도 하지 않고 종료 1.
 
 사용법:
     python <agent-docs-sync 스킬>/scripts/sync_agy_skills.py             # 동기화
@@ -26,9 +29,9 @@ sync_agent_docs.py 가 "프로젝트 레벨"(CLAUDE.md → AGENTS.md, .claude/sk
 
 종료 코드 (sync_agent_docs.py 와 같은 규약):
   0  전부 최신이거나 정상 반영됨(경고 없음)
-  2  frontmatter 검증 경고, 목록에 있으나 정본이 없는 스킬, 또는 드리프트로 건너뛴
+  2  frontmatter 검증 경고, 목록에 있으나 정본이 없는 스킬, 또는 드리프트·실제 폴더로 건너뛴
      스킬 — 나머지는 정상 반영됨. 실패가 아니라 "확인 필요" 신호.
-  1  기타 오류(allowlist 부재 등)
+  1  기타 오류(allowlist 부재, agy 루트가 링크이거나 정본 루트와 겹침 등)
 """
 
 from __future__ import annotations
@@ -62,6 +65,7 @@ EXCLUDE_FILES = {"desktop.ini", ".DS_Store", "accounts.json"}
 EXCLUDE_GLOBS = (
     "*.pyc", "*.pyo",
     "*token*.json", "client_secret*.json", "*.token", "*.key", "*.pem",
+    ".env*", "secrets*",
 )
 
 LIST_HEADER = """\
@@ -251,19 +255,28 @@ def materialize_windows(
     return ("복사", None)
 
 
-def materialize_posix(src: Path, dst: Path, check: bool) -> str:
-    """POSIX: agy 가 symlink 를 따라가므로 링크로 충분하다(스크립트가 만든 링크뿐이면 사본·드리프트 없음)."""
+def materialize_posix(src: Path, dst: Path, check: bool, force: bool) -> tuple[str, str | None]:
+    """POSIX: agy 가 symlink 를 따라가므로 링크로 충분하다. (동작 문자열, 건너뛴 사유|None) 를 반환.
+
+    agy 루트에 이미 실제 폴더(agy 에 직접 설치했거나 손으로 만든 스킬)가 있으면, 정본과
+    내용이 같을 때만 링크로 바꾸고 다르면 지우지 않고 건너뛴다(--force 로 무시).
+    """
     if dst.is_symlink() and Path(os.readlink(dst)) == src:
-        return "이미 최신"
+        return ("이미 최신", None)
+    real_dir = dst.is_dir() and not dst.is_symlink()
+    if real_dir and not force and hash_tree(dst) != hash_tree(src):
+        return (
+            "실제 폴더(건너뜀)",
+            f"agy 루트에 정본과 다른 실제 폴더가 있음: {describe_diff(hash_tree(src), hash_tree(dst))}",
+        )
     if check:
-        return "symlink(예정)"
-    if dst.is_symlink() or dst.exists():
-        if dst.is_dir() and not dst.is_symlink():
-            shutil.rmtree(dst, ignore_errors=True)
-        else:
-            dst.unlink()
+        return ("symlink(예정)", None)
+    if real_dir:
+        shutil.rmtree(dst, ignore_errors=True)
+    elif dst.is_symlink() or dst.exists():
+        dst.unlink()
     dst.symlink_to(src, target_is_directory=True)
-    return "symlink"
+    return ("symlink", None)
 
 
 def load_list(path: Path) -> list[str]:
@@ -318,6 +331,24 @@ def main() -> int:
         print(f"오류: allowlist 가 비어 있다: {args.list}", file=sys.stderr)
         return 1
 
+    # agy 루트 자체가 링크면 가리키는 곳의 실제 폴더를 정리·교체 대상으로 보게 된다(정본일 수 있다).
+    if is_link_dir(AGY_ROOT):
+        print(f"오류: agy 루트({AGY_ROOT})가 링크다 → {os.path.realpath(AGY_ROOT)}", file=sys.stderr)
+        print("  링크 자체만 지우고(대상은 건드리지 말 것) 실제 폴더로 다시 만든 뒤 실행하라.", file=sys.stderr)
+        return 1
+
+    # agy 루트와 정본 루트가 겹치면(한쪽이 다른 쪽을 가리키는 링크 등) 정리·교체가 정본을 지운다.
+    agy_real = os.path.realpath(AGY_ROOT)
+    canon_real = os.path.realpath(CANONICAL_ROOT)
+    try:
+        overlap = os.path.commonpath([agy_real, canon_real]) in (agy_real, canon_real)
+    except ValueError:
+        overlap = False  # 다른 드라이브
+    if overlap:
+        print(f"오류: agy 루트({AGY_ROOT} → {agy_real})가 정본 루트({canon_real})와 겹친다.", file=sys.stderr)
+        print("  agy 루트는 정본을 가리키지 않는 별도 폴더여야 한다. 링크를 지우고 다시 실행하라.", file=sys.stderr)
+        return 1
+
     if not args.check:
         AGY_ROOT.mkdir(parents=True, exist_ok=True)
 
@@ -336,6 +367,12 @@ def main() -> int:
 
         # junction(Windows)·symlink(macOS) 어느 쪽이든 실체까지 해석한다.
         src = link.resolve()
+        try:
+            src.relative_to(Path(agy_real))
+            skipped.append(f"{name}: 정본 실체({src})가 agy 루트 안에 있음 — 반영하지 않음")
+            continue
+        except ValueError:
+            pass
         warn = validate(name, src)
         if warn:
             warnings.append(f"{name}: {warn}")
@@ -358,8 +395,13 @@ def main() -> int:
             else:
                 done += 1
         else:
-            action = materialize_posix(src, AGY_ROOT / name, args.check)
-            done += 1
+            action, drift = materialize_posix(
+                src, AGY_ROOT / name, args.check, force_all or name in force_names,
+            )
+            if drift:
+                skipped.append(f"{name}: {drift}")
+            else:
+                done += 1
         print(f"  {name:30} {action:14} <- {src}")
 
     # allowlist 에서 빠진 항목은 agy 루트에서 정리한다(정본은 건드리지 않는다).
@@ -392,6 +434,16 @@ def main() -> int:
                         f"{entry.name}: allowlist 에서 빠졌지만 복사본이 {reason} — 삭제하지 않음"
                     )
                     continue
+            if (
+                not IS_WINDOWS
+                and entry.is_dir()
+                and not entry.is_symlink()
+                and not (force_all or entry.name in force_names)
+            ):
+                skipped.append(
+                    f"{entry.name}: allowlist 에서 빠진 실제 폴더(직접 설치·수정한 스킬일 수 있음) — 삭제하지 않음"
+                )
+                continue
             removed.append(entry.name)
             if not args.check:
                 if entry.is_symlink() or entry.is_file():
@@ -418,7 +470,8 @@ def main() -> int:
         for s in skipped:
             print(f"  - {s}")
         print("  (agy 쪽 수정을 정본에 반영한 뒤 재실행하면 자동 해소되고,")
-        print("   폐기해도 되면 --force <스킬명> 으로 그 스킬만 덮어써라.)")
+        print("   폐기해도 되면 --force <스킬명> 으로 그 스킬만 덮어써라.")
+        print("   '정본 실체가 agy 루트 안' 은 --force 로 풀리지 않는다. 정본을 agy 루트 밖으로 옮겨라.)")
     if warnings:
         print("경고:")
         for w in warnings:

@@ -7,8 +7,6 @@
     → ~/.gemini/config/skills/<name>
 ```
 
-**실행 전 확인(macOS)**: macOS 판에는 드리프트 가드가 없다. agy 루트에 이미 **실제 폴더**(agy에 직접 설치했거나 손으로 만든 스킬)가 있으면 확인 없이 지운다: allowlist에 있으면 symlink로 바꾸고, 없으면 정리한다. 또 `~/.gemini/config/skills` 자체가 `~/.claude/skills`(또는 그 안)를 가리키는 symlink면 정본 스킬이 지워진다. 실행 전에 `ls -ld ~/.gemini/config/skills`와 `ls -l ~/.gemini/config/skills`로 링크가 아닌 실제 폴더가 없는지 보고, 있으면 그 내용을 정본(`~/.claude/skills`)에 옮긴 뒤 지운다.
-
 ```bash
 python "<이 스킬 경로>/scripts/sync_agy_skills.py"             # 반영
 python "<이 스킬 경로>/scripts/sync_agy_skills.py" --check     # 드라이런
@@ -17,7 +15,15 @@ python "<이 스킬 경로>/scripts/sync_agy_skills.py" --init      # allowlist 
 python "<이 스킬 경로>/scripts/sync_agy_skills.py" --list <경로>   # 다른 allowlist 사용
 ```
 
-종료 코드는 `sync_agent_docs.py`와 같은 규약(`0` 정상 · `2` 검증 경고/정본 부재/드리프트 건너뜀 · `1` 오류).
+종료 코드는 `sync_agent_docs.py`와 같은 규약(`0` 정상 · `2` 검증 경고/정본 부재/드리프트·실제 폴더 건너뜀 · `1` 오류, agy 루트가 링크이거나 정본 루트와 겹침 포함).
+
+## 정본을 지우지 않는 가드
+
+- **agy 루트가 링크이거나 정본 루트와 겹침**: `~/.gemini/config/skills` 자체가 symlink·junction이면 가리키는 곳이 어디든, 또는 `~/.claude/skills`와 서로 겹치면 아무것도 하지 않고 종료 코드 `1`로 끝난다(`--force`로도 풀리지 않는다). 링크 자체만 지우고(대상 폴더는 건드리지 않는다) 실제 폴더로 다시 만든 뒤 실행한다.
+- **정본이 agy 루트 안**: `~/.claude/skills/<name>`이 agy 루트 안의 폴더를 가리키면 그 스킬은 반영하지 않고 건너뛴다(종료 `2`). 정본을 agy 루트 밖으로 옮긴다.
+- **macOS의 실제 폴더**: agy 루트에 이미 실제 폴더(agy에 직접 설치했거나 손으로 만든 스킬)가 있으면, 정본과 내용이 같을 때만 symlink로 바꾼다. 다르거나 allowlist 밖이면 지우지 않고 건너뛴다(종료 `2`). 살릴 내용은 정본에 옮긴 뒤 다시 실행하고, 버려도 되면 `--force <스킬명>`으로 덮어쓴다. Windows의 같은 상황은 아래 드리프트 가드가 맡는다. → 사례(`references/cases.md`)
+
+회귀 테스트: `python "<이 스킬 경로>/tests/test_sync_agy_skills.py"`(POSIX).
 
 ## 드리프트 가드 (Windows 전용)
 
@@ -41,7 +47,7 @@ python "<이 스킬 경로>/scripts/sync_agy_skills.py" --list <경로>   # 다�
 | OS | agy의 링크 추종 | 따라서 반영 방식 |
 |---|---|---|
 | Windows | junction을 **따라가지 않음** | **물리 복사** (정본 수정 시마다 재실행 필요) |
-| macOS | symlink를 **따라감** | **symlink** (스크립트가 만든 링크뿐이면 사본·드리프트 없음) |
+| macOS | symlink를 **따라감** | **symlink** (사본 없음, 이미 있던 실제 폴더는 위 가드) |
 
 같은 이름·같은 내용·같은 자리에서 junction은 미로드, 실제 폴더는 로드되는 것을 통제 실험으로 확인했다. 참고로 **Codex는 Windows junction도 정상 추종**한다. agy만 예외라, "junction이라 안 읽힌다"를 모든 에이전트에 일반화하면 안 된다. → 사례
 
@@ -49,7 +55,7 @@ python "<이 스킬 경로>/scripts/sync_agy_skills.py" --list <경로>   # 다�
 
 ## allowlist
 
-어떤 스킬을 agy에 노출할지는 `~/.gemini/agy-skills.txt`에 한 줄에 하나씩 적는다(`#` 주석 가능). `~/.claude/skills`에는 k-skill 번들 등 수십~수백 개가 섞여 있어 전부 넣으면 agy 컨텍스트가 스킬 설명으로 뒤덮이기 때문이다. 목록에서 빠진 항목은 agy 루트에서 정리되며(Windows의 물리 폴더는 드리프트 가드를 거친다), **정본은 건드리지 않는다**.
+어떤 스킬을 agy에 노출할지는 `~/.gemini/agy-skills.txt`에 한 줄에 하나씩 적는다(`#` 주석 가능). `~/.claude/skills`에는 k-skill 번들 등 수십~수백 개가 섞여 있어 전부 넣으면 agy 컨텍스트가 스킬 설명으로 뒤덮이기 때문이다. 목록에서 빠진 항목은 agy 루트에서 정리되며(실제 폴더는 위 가드를 거친다), **정본은 건드리지 않는다**.
 
 ## 진단: 모델에게 묻지 말 것
 

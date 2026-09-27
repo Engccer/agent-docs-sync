@@ -39,7 +39,8 @@ sync_agent_docs.py — 에이전트 지침·스킬 단방향 동기화
 
 종료 코드:
   0  전부 최신이거나 정상 반영됨(발산·스킬 검증 경고 없음)
-  2  발산 파일이나 접근 불가 경로를 건너뜀, 또는 스킬 frontmatter 검증 경고가 있음 — 나머지는 정상 동기화됨.
+  2  발산 파일이나 접근 불가 경로를 건너뜀, symlink 스킬 때문에 스킬 미러링을 건너뜀,
+     또는 스킬 frontmatter 검증 경고가 있음 — 나머지는 정상 동기화됨.
      실패가 아니라 "확인 필요" 신호.
      (무관한 폴더의 발산이 떠 있어도 내가 방금 고친 CLAUDE.md 의 AGENTS.md 는 그대로 생성/갱신된다.)
   1  기타 오류(정본 CLAUDE.md 부재 등)
@@ -101,6 +102,7 @@ SKILL_EXCLUDE_FILES = {"desktop.ini", ".DS_Store", "accounts.json"}
 SKILL_EXCLUDE_GLOBS = (
     "*.pyc", "*.pyo",
     "*token*.json", "client_secret*.json", "*.token", "*.key", "*.pem",
+    ".env*", "secrets*",
 )
 # 고아 정리에서 "무시"할 OS/캐시 잡파일. Google Drive 는 폴더마다 desktop.ini 를 자동
 # 생성하므로, 이를 고아로 보고 지우면 Drive 가 다시 만들어 매 실행이 churn 된다 → 그냥 둔다.
@@ -408,11 +410,26 @@ def prune_empty_dirs(root: Path) -> None:
             pass
 
 
-def sync_skills(args) -> bool:
-    """반환: any_written. 정본을 .agents/skills/ 로 미러링(자격증명 제외)."""
+def sync_skills(args) -> tuple[bool, list[str]]:
+    """반환: (any_written, linked). 정본을 .agents/skills/ 로 미러링(자격증명 제외).
+
+    linked: .claude/skills/ 최상위의 symlink 스킬 이름. walk 는 symlink 를 따라가지 않아
+    그 내용이 정본 목록에서 빠지고, 고아 정리가 .agents/skills/ 의 같은 이름 파일을 지운다
+    (symlink 가 .agents/skills/ 를 가리키는 역전 환경이면 실제 정본 삭제). 하나라도 있으면
+    미러링 전체를 건너뛴다."""
     if not SKILLS_SRC.exists():
         print(f"[건너뜀] 스킬 정본 폴더 없음: {SKILLS_SRC}")
-        return False
+        return False, []
+
+    linked = sorted(p.name for p in SKILLS_SRC.iterdir() if p.is_symlink())
+    if linked:
+        print(
+            f"[스킬 방향 경고] .claude/skills/ 에 symlink 스킬이 있어 미러링을 건너뜁니다: {', '.join(linked)}\n"
+            "        ↳ .agents/skills/ 를 가리키면 정본 방향이 역전된 환경이라 미러링이 필요 없습니다.\n"
+            "          외부 경로를 가리키면 그 스킬을 실제 폴더로 두어야 미러링됩니다.",
+            file=sys.stderr,
+        )
+        return False, linked
 
     src_files = iter_source_skill_files()
     src_set = set(src_files)
@@ -463,9 +480,9 @@ def sync_skills(args) -> bool:
             f"[미러링{verb}] .agents/skills/ ← .claude/skills/ "
             f"(신규 {created} · 갱신 {updated} · 삭제 {removed} · 대상 {len(src_files)})"
         )
-        return not args.check
+        return not args.check, []
     print(f"[최신] .agents/skills/ 변경 없음 (대상 {len(src_files)})")
-    return False
+    return False, []
 
 
 # ── 스킬 frontmatter 검증 (생성물이 Codex·Antigravity 표준에서 깨지지 않는지) ──
@@ -577,7 +594,7 @@ def main() -> int:
 
     state = load_state()
     diverged_keys, docs_written, skipped_paths = sync_docs(args, state)
-    skills_written = sync_skills(args)
+    skills_written, skill_links = sync_skills(args)
 
     if (docs_written or skills_written) and not args.check:
         save_state(state)
@@ -606,6 +623,12 @@ def main() -> int:
             + "\n        ↳ 나머지는 정상 동기화됨(종료 코드 2 = 확인 필요, 실패 아님). 상태 기록은 보존했습니다."
             + "\n        ↳ SSH 세션 등에서 junction 통과가 막힌 경우라면 로컬 세션에서 다시 실행하세요."
         )
+    if skill_links:
+        print(
+            f"\n[요약] symlink 스킬 {len(skill_links)}개 때문에 스킬 미러링을 건너뜀: "
+            + ", ".join(skill_links)
+            + "\n        ↳ 문서 동기화는 정상 완료됨(종료 코드 2 = 확인 필요). 정본 방향을 먼저 확인하세요."
+        )
     if diverged_keys:
         # 발산은 "부분 성공" — 건너뛴 파일만 빼고 나머지는 모두 반영됐다. 전체가 멈춘 게 아님을 명시한다.
         print(
@@ -622,7 +645,7 @@ def main() -> int:
             "(종료 코드 2 = 확인 필요, 실패 아님)."
         )
         return 2
-    if skipped_paths:
+    if skipped_paths or skill_links:
         return 2
     if args.check:
         print("\n(--check 모드: 실제로 쓰지 않았습니다.)")

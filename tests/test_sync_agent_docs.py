@@ -14,6 +14,7 @@ NFD 별형 경로를 NFC 실파일로 해석(resolve)하므로 **살아 있는 A
       상태에 NFD 구키가 잔존하지 않는다
   T4  진짜 고아(CLAUDE.md 삭제됨)는 여전히 정리된다
   T5·T6  접근 불가 경로 (test_unreachable_folder 참조)
+  T7~T9  스킬 미러링 안전 가드, 고아 정리 최종 가드 (test_skill_safety 참조)
 
 실행: python tests/test_sync_agent_docs.py  (표준 라이브러리만 사용, 종료 코드 0=통과)
 """
@@ -130,6 +131,89 @@ def test_unreachable_folder() -> list[str]:
     return failures
 
 
+SKILL_MD = "---\nname: {name}\ndescription: >-\n  시험용 스킬.\n---\n본문\n"
+
+
+def run_main(mod, *argv: str) -> int:
+    saved = sys.argv
+    sys.argv = ["sync_agent_docs.py", *argv]
+    try:
+        return mod.main()
+    finally:
+        sys.argv = saved
+
+
+def test_skill_safety() -> list[str]:
+    """T7~T9 — 스킬 미러링 안전 가드와 고아 정리 최종 가드.
+
+      T7  .claude/skills/ 최상위에 symlink 가 있으면(정본 방향 역전 의심) 미러링을 멈추고
+          .agents/skills/ 의 파일을 지우지 않으며 종료 코드 2 를 낸다
+      T8  .env*·secrets* 비밀 파일은 미러링하지 않고, 예전에 복제된 것은 생성물에서 지운다
+      T9  키 비교가 빗나가도 형제 CLAUDE.md 가 살아 있으면 고아로 지우지 않는다(has_sibling_canonical)
+    """
+    failures = []
+    if os.name == "nt":
+        return failures  # symlink 생성 권한이 필요해 POSIX 에서만 돈다
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td).resolve()
+        (root / "CLAUDE.md").write_text("# 루트\n", encoding="utf-8")
+        real = root / ".agents" / "skills" / "s1"
+        real.mkdir(parents=True)
+        (real / "SKILL.md").write_text(SKILL_MD.format(name="s1"), encoding="utf-8")
+        src = root / ".claude" / "skills"
+        src.mkdir(parents=True)
+        (src / "s1").symlink_to(real, target_is_directory=True)
+        (src / "own").mkdir()
+        (src / "own" / "SKILL.md").write_text(SKILL_MD.format(name="own"), encoding="utf-8")
+        mod = load_module(root)
+        code = run_main(mod)
+        if not (real / "SKILL.md").exists():
+            failures.append("T7 실패: 역전 환경에서 .agents/skills/ 의 실제 스킬 파일이 지워짐")
+        if code != 2:
+            failures.append(f"T7 실패: 역전 환경인데 종료 코드 {code} (기대 2)")
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td).resolve()
+        (root / "CLAUDE.md").write_text("# 루트\n", encoding="utf-8")
+        k = root / ".claude" / "skills" / "k"
+        k.mkdir(parents=True)
+        (k / "SKILL.md").write_text(SKILL_MD.format(name="k"), encoding="utf-8")
+        (k / "config.yaml").write_text("a: 1\n", encoding="utf-8")
+        for secret in (".env", ".env.local", "secrets.yaml"):
+            (k / secret).write_text("KEY=x\n", encoding="utf-8")
+        old = root / ".agents" / "skills" / "k"
+        old.mkdir(parents=True)
+        (old / ".env").write_text("KEY=old\n", encoding="utf-8")
+        mod = load_module(root)
+        code = run_main(mod)
+        for keep in ("SKILL.md", "config.yaml"):
+            if not (old / keep).exists():
+                failures.append(f"T8 실패: 일반 파일 {keep} 이 미러링되지 않음")
+        for secret in (".env", ".env.local", "secrets.yaml"):
+            if (old / secret).exists():
+                failures.append(f"T8 실패: 비밀 파일 {secret} 이 생성물에 남음")
+        if code != 0:
+            failures.append(f"T8 실패: 종료 코드 {code} (기대 0)")
+
+    # T9: 키 비교가 빗나가도(walk 가 못 본 symlink 폴더) 형제 CLAUDE.md 가 살아 있으면 지우지 않는다
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td).resolve()
+        root = base / "proj"
+        root.mkdir()
+        (root / "CLAUDE.md").write_text("# 루트\n", encoding="utf-8")
+        outside = base / "outside"
+        outside.mkdir()
+        (outside / "CLAUDE.md").write_text("# 밖\n", encoding="utf-8")
+        (root / "linked").symlink_to(outside, target_is_directory=True)
+        mod = load_module(root)
+        (outside / "AGENTS.md").write_text(mod.BANNER + "# 밖\n", encoding="utf-8")
+        mod.STATE_FILE.write_text(json.dumps({"linked/AGENTS.md": mod.sha256("# 밖\n")}), encoding="utf-8")
+        run_main(mod)
+        if not (outside / "AGENTS.md").exists():
+            failures.append("T9 실패: 형제 CLAUDE.md 가 살아 있는 AGENTS.md 가 고아로 지워짐")
+    return failures
+
+
 def main() -> int:
     failures = []
     with tempfile.TemporaryDirectory() as td:
@@ -197,6 +281,7 @@ def main() -> int:
             failures.append("T4 실패: 진짜 고아 AGENTS.md가 정리되지 않음")
 
     failures += test_unreachable_folder()
+    failures += test_skill_safety()
 
     if failures:
         print("\n".join(failures))

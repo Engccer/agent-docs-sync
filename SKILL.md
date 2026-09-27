@@ -11,29 +11,23 @@ description: >-
   Codex/Antigravity, generate AGENTS.md from CLAUDE.md, mirror skills to .agents, agent-neutral docs
   sync, sync user-level skills to Antigravity CLI global skill root.
 metadata:
-  version: "1.1.1"
+  version: "1.2.0"
 ---
 
 # agent-docs-sync — 멀티 에이전트 호환 지침·스킬 동기화
 
-## ⚠ 실행 전 필수 게이트 — 정본 방향 확정 (프로젝트 레벨, 건너뛰면 정본 파괴)
+## ⚠ 정본 방향 확인 (프로젝트 레벨, 틀리면 정본 파괴)
 
-**`sync_agent_docs.py`의 단 하나의 전제: `CLAUDE.md` + `.claude/skills/`가 정본이고, `AGENTS.md` + `.agents/skills/`는 생성물이다.** 이 방향이 거짓인 환경에서 실행하면 동기화가 진짜 파일을 "고아"로 판단해 **삭제**한다. 프로젝트 레벨 작업의 어떤 단계보다 먼저 아래 게이트를 통과한다. 사용자 레벨(`sync_agy_skills.py`)은 `~/.claude/skills`의 symlink를 실체까지 해석하는 것이 정상 동작이라 이 게이트 대신 `references/agy.md`의 실행 전 확인을 따른다.
+**`sync_agent_docs.py`의 단 하나의 전제: `CLAUDE.md` + `.claude/skills/`가 정본이고, `AGENTS.md` + `.agents/skills/`는 생성물이다.** 이 방향이 거짓인 환경에서 실행하면 동기화가 진짜 파일을 "고아"로 판단해 **삭제**한다. 방향은 추정하지 말고 스크립트 경고와 아래 확인으로 정한다. 사용자 레벨(`sync_agy_skills.py`)은 `~/.claude/skills`의 symlink를 실체까지 해석하는 것이 정상 동작이라 `references/agy.md`를 따른다. → 사례(`references/cases.md`)
 
-**위반의 글자 = 위반의 정신.** "이 정도면 정본이 맞겠지"라는 추정으로 게이트를 건너뛰는 것은 게이트를 어기는 것이다. 방향은 추정하지 말고 아래 명령으로 매번 확정한다. → 사례(`references/cases.md`)
+### 스킬 방향: `[스킬 방향 경고]`
 
-### 게이트 1 — 스킬 방향 (가장 위험: 데이터 손실)
+`.claude/skills/` 최상위에 symlink 스킬이 하나라도 있으면 스크립트는 스킬 미러링 전체를 건너뛰고 `[스킬 방향 경고]`와 종료 코드 `2`를 낸다(문서 동기화는 그대로 진행). walk가 symlink를 따라가지 않아 그 스킬이 정본 목록에서 빠지고, 미러링하면 고아 정리가 `.agents/skills/`의 같은 이름 파일을 지우기 때문이다. Windows junction 스킬은 walk가 따라가므로 해당하지 않는다. 경고가 뜨면 symlink가 가리키는 곳으로 판정한다.
 
-```bash
-find <루트>/.claude/skills -maxdepth 1 -type l    # symlink 스킬 목록 (있으면 의심)
-```
+- **`.agents/skills/`를 가리킨다** → 정본 방향이 역전된 환경이다. `.agents/skills/`가 실제 정본이라 만들 생성물이 없다(Codex·Antigravity는 `.agents/skills/`를 직접 읽는다). 사용자에게 보고하고 스킬 미러링은 그대로 둔다.
+- **외부 경로(다른 저장소 등)를 가리킨다** → 그 스킬을 실제 폴더로 두기 전에는 이 프로젝트의 스킬 미러링이 전부 멈춰 있다. 사용자에게 알리고 어떻게 둘지 묻는다.
 
-스크립트는 `.claude/skills/`를 `os.walk` 기본값(symlink를 따라가지 않음)으로 읽으므로 symlink 스킬의 내용은 정본 목록에서 빠지고, 고아 정리(`sync_skills`)가 `.agents/skills/`의 같은 이름 파일을 지운다. symlink가 가리키는 곳에 따라 판정한다. Windows junction 스킬은 walk가 따라가므로 내용이 미러링된다.
-
-- **`.agents/skills/`를 가리킨다** → 정본 방향이 역전된 환경이다. `.agents/skills/`가 실제 정본이므로 미러링하면 **실제 스킬 파일이 지워진다.** 스킬 미러링을 실행하지 말고 사용자에게 보고한다. 만들 생성물도 없다(Codex·Antigravity는 `.agents/skills/`를 직접 읽는다).
-- **외부 경로(다른 저장소 등)를 가리킨다** → 그 스킬은 미러링되지 않고, `.agents/skills/`에 남아 있던 옛 미러는 고아로 지워진다. 그 스킬을 다른 에이전트에 노출해야 하면 사용자에게 알린다.
-
-### 게이트 2 — 문서 방향 (symlink-trap)
+### 문서 방향 (symlink-trap)
 
 ```bash
 find <루트> -name AGENTS.md -type l               # AGENTS.md가 symlink면 방향 확인
@@ -43,12 +37,11 @@ find <루트> -name AGENTS.md -type l               # AGENTS.md가 symlink면 �
 
 ### Red Flags — STOP, 정본 방향부터 확인
 
-- `.claude/skills/` 안에 `->`(symlink)가 보인다
 - `--check`가 대량 삭제를 예고한다: 스킬은 `[미러링(예정)] … (신규 N · 갱신 N · 삭제 N · 대상 N)`의 **삭제 수가 대상 수보다 크거나 예상 밖으로 많다**, 문서는 `[정리]` 줄이 여러 개다
 - 동기화 대상이 프로젝트 워크스페이스가 아니라 `~/.claude` 같은 **에이전트 홈**이다 (정본·플러그인 캐시·외부 symlink가 한 트리에 섞임)
 - "내가 만든 스킬이니 환경은 내가 안다"
 
-**위 신호 중 하나라도 있으면 미러링을 멈추고 게이트 명령으로 방향을 확인하라.**
+**위 신호 중 하나라도 있으면 실행하지 말고 무엇이 지워지는지부터 확인하라.**
 
 ## 무엇을 하는가
 
@@ -81,7 +74,7 @@ python sync_agent_docs.py --force    # 발산한 AGENTS.md도 정본 기준으�
 
 **사본 갱신**: 루트 사본이 구버전이면 이 스킬의 스크립트로 바꾼다(구버전은 고아 정리 방어가 빠져 있을 수 있다). 바꾸기 전에 `diff`에서 사본에 손으로 더한 설정(예: `DOC_EXCLUDE_DIRS`에 더한 폴더)이 보이면 새 사본에 옮겨 넣는다. 차이가 그 설정뿐이면 사본은 최신이다.
 
-종료 코드: `0` 전부 최신/반영(경고 없음) · `2` **발산한 `AGENTS.md`나 접근 불가 경로를 건너뛰었거나 스킬 frontmatter 검증 경고가 있음(나머지는 정상 동기화, 확인 필요, 실패 아님)** · `1` 기타 오류. 발산이 떠도 건너뛰는 것은 그 파일 하나뿐이라, 무관한 폴더의 묵은 발산 때문에 방금 고친 `CLAUDE.md`의 반영이 막히지 않는다. 끝의 `[요약]` 줄이 건너뛴 파일과 이유를 모아 보여 준다.
+종료 코드: `0` 전부 최신/반영(경고 없음) · `2` **발산한 `AGENTS.md`나 접근 불가 경로를 건너뛰었거나, symlink 스킬 때문에 스킬 미러링을 건너뛰었거나, 스킬 frontmatter 검증 경고가 있음(나머지는 정상 동기화, 확인 필요, 실패 아님)** · `1` 기타 오류. 발산이 떠도 건너뛰는 것은 그 파일 하나뿐이라, 무관한 폴더의 묵은 발산 때문에 방금 고친 `CLAUDE.md`의 반영이 막히지 않는다. 끝의 `[요약]` 줄이 건너뛴 파일과 이유를 모아 보여 준다.
 
 스크립트는 자기 위치(`Path(__file__).resolve().parent`)를 프로젝트 루트로 삼으므로, 루트에 **복사한** 사본을 그 자리에서 실행한다. 스킬의 스크립트를 symlink로 걸면 루트가 스킬의 `scripts/`가 되어 `[오류] 정본을 찾을 수 없음`으로 끝난다.
 
@@ -152,7 +145,7 @@ python sync_agent_docs.py --check    # 재실행 시 모두 "[최신]"이어야 
 
 ## 보안: 무엇이 동기화되지 않는가
 
-스킬 미러링이 제외하는 것은 아래 패턴뿐이다(노출면·회전 부담 2배 방지): 자격증명 `credentials/`·`accounts.json`·`*token*.json`·`client_secret*.json`·`*.token`·`*.key`·`*.pem`, 폴더 `.git`·`.idea`·`node_modules`·`.venv`·`__pycache__`, 캐시 `*.pyc`·`*.pyo`, OS 잡파일 `desktop.ini`·`.DS_Store`. 이 패턴에 걸리지 않는 비밀 파일(`.env`·`secrets.yaml` 등)은 `.agents/skills/`로 그대로 복제되니 정본 스킬 폴더에 두지 않는다.
+스킬 미러링이 제외하는 것은 아래 패턴뿐이다(노출면·회전 부담 2배 방지): 자격증명 `credentials/`·`accounts.json`·`*token*.json`·`client_secret*.json`·`*.token`·`*.key`·`*.pem`·`.env*`·`secrets*`, 폴더 `.git`·`.idea`·`node_modules`·`.venv`·`__pycache__`, 캐시 `*.pyc`·`*.pyo`, OS 잡파일 `desktop.ini`·`.DS_Store`. 이 패턴에 걸리지 않는 이름의 비밀 파일은 `.agents/skills/`로 그대로 복제되니 정본 스킬 폴더에 두지 않는다.
 
 **주의**: `CLAUDE.md` 본문에 API 키 같은 비밀을 인라인으로 적으면, 전문 복제물인 `AGENTS.md`에도 그대로 들어간다. 키는 별도 설정 파일/환경변수로 분리하는 것을 권한다.
 
