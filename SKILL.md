@@ -25,8 +25,11 @@ metadata:
 스킬 미러링은 두 트리(원본 `.claude/skills/`, 생성물 `.agents/skills/`)에 링크가 섞이면 멈춘다. 고아 정리는 생성물을 walk하며 지우고 복사는 생성물 경로에 쓰기 때문에, 링크가 섞이면 원본이나 프로젝트 밖을 지우거나 덮는다. 아래 중 하나라도 있으면 스크립트는 스킬 미러링 전체를 건너뛰고 `[스킬 방향 경고]`(해당 경로 목록)와 종료 코드 `2`를 낸다(문서 동기화는 그대로 진행).
 
 - 두 트리가 실체로 겹친다(`.claude`·`.claude/skills`·`.agents`·`.agents/skills` 중 하나가 다른 쪽이나 그 안쪽을 가리키는 링크).
-- 생성물이 프로젝트 밖 실체이거나, 생성물 안(어느 깊이든)에 링크(파일·폴더, junction 포함)가 있다. 스크립트는 생성물에 링크를 만들지 않는다.
+- `.agents`나 `.agents/skills` 자체가 링크이거나(프로젝트 안 다른 폴더를 가리켜도), 생성물 안(어느 깊이든)에 링크(파일·폴더, junction 포함)가 있다. 스크립트는 생성물에 링크를 만들지 않는다.
 - 원본 안(어느 깊이든)의 폴더 링크가 생성물과 얽혀 있거나, symlink라 walk가 따라가지 못한다. 밖을 가리키는 Windows junction은 walk가 따라가 정상 미러링된다.
+- 원본 안의 파일 symlink. 원본 저장소엔 링크만 있는데 생성물엔 가리키는 내용(밖의 비밀 등)이 복제되기 때문이다.
+
+아래 보안 절의 제외 이름(`credentials/` 등)은 복제하지 않으므로 링크여도 문제 삼지 않는다.
 
 경고가 뜨면 링크가 가리키는 곳으로 판정한다.
 
@@ -152,7 +155,7 @@ python sync_agent_docs.py --check    # 재실행 시 모두 "[최신]"이어야 
 
 ## 보안: 무엇이 동기화되지 않는가
 
-스킬 미러링이 제외하는 것은 아래 패턴뿐이다(노출면·회전 부담 2배 방지): 자격증명 폴더 `credentials/`·`secrets/`, 자격증명 파일 `accounts.json`·`.envrc`·`secrets`·`*token*.json`·`client_secret*.json`·`*.token`·`*.key`·`*.pem`·`.env`·`.env.*`·`secrets.*`(파일 패턴은 대소문자 무시, `.env.example` 같은 견본도 빠진다), 폴더 `.git`·`.idea`·`node_modules`·`.venv`·`__pycache__`, 캐시 `*.pyc`·`*.pyo`, OS 잡파일 `desktop.ini`·`.DS_Store`. 이 패턴에 걸리지 않는 이름의 비밀 파일은 `.agents/skills/`로 그대로 복제되니 정본 스킬 폴더에 두지 않는다.
+스킬 미러링이 제외하는 것은 아래 패턴뿐이다(노출면·회전 부담 2배 방지): 자격증명 폴더 `credentials/`·`secrets/`, 자격증명 파일 `accounts.json`·`.envrc`·`secrets`·`*token*.json`·`client_secret*.json`·`credentials*.json`·`*service*account*.json`·`*.token`·`*.key`·`*.pem`·`*.p12`·`*.pfx`·`.env`·`.env.*`·`secrets.*`(파일 패턴은 대소문자 무시, `.env.example` 같은 견본도 빠진다), 폴더 `.git`·`.idea`·`node_modules`·`.venv`·`__pycache__`, 캐시 `*.pyc`·`*.pyo`, OS 잡파일 `desktop.ini`·`.DS_Store`. 이 패턴에 걸리지 않는 이름의 비밀 파일은 `.agents/skills/`로 그대로 복제되니 정본 스킬 폴더에 두지 않는다.
 
 **주의**: `CLAUDE.md` 본문에 API 키 같은 비밀을 인라인으로 적으면, 전문 복제물인 `AGENTS.md`에도 그대로 들어간다. 키는 별도 설정 파일/환경변수로 분리하는 것을 권한다.
 

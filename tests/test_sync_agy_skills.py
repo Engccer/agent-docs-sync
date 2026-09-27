@@ -25,6 +25,10 @@ POSIX 는 agy 루트에 symlink 만 걸기 때문에 사본이 없다는 전제�
   A19 agy 루트까지의 상위 경로에 링크가 있으면 아무것도 지우지 않고 종료 1
   A20 .envrc·확장자 없는 secrets 도 복사 제외
   A21 agy 쪽 실제 폴더의 끊어진 symlink 에서 죽지 않고 그 스킬만 건너뛴다
+  A22 allowlist 의 절대경로 항목은 거부한다(agy 루트 밖을 지우지 않음)
+  A23 allowlist 의 .. 항목은 거부한다(--force 여도)
+  A25 allowlist 에 잘못된 항목만 있으면 정리하지 않고 종료 1
+  A24 Windows 분기: 복사본 안에 제외 대상 파일(스킬이 만든 토큰 등)이 있으면 교체·정리하지 않는다
 
 실행: python tests/test_sync_agy_skills.py  (표준 라이브러리만 사용, 종료 코드 0=통과. symlink 를 만들므로 Windows 에서는 건너뜀.
       A16·A17 은 IS_WINDOWS 를 켜서 Windows 분기 코드를 POSIX 에서 돌린다)
@@ -400,6 +404,66 @@ def main() -> int:
                 failures.append("A21 실패: 끊어진 링크가 든 실제 폴더가 교체됨")
             if code != 2:
                 failures.append(f"A21 실패: 종료 코드 {code} (기대 2)")
+
+    # A22: allowlist 에 절대경로가 들어가도 agy 루트 밖 폴더를 지우지 않는다
+    with tempfile.TemporaryDirectory() as td:
+        home = make_home(td, ["a"])
+        mod = load_module(home)
+        draft = home / "work" / "skill-draft"
+        (draft / ".git").mkdir(parents=True)
+        (draft / "SKILL.md").write_text(SKILL_MD.format(name="skill-draft"), encoding="utf-8")
+        (home / ".gemini" / "agy-skills.txt").write_text(f"a\n{draft}\n", encoding="utf-8")
+        code = run_main(mod)
+        if draft.is_symlink() or not (draft / "SKILL.md").exists() or not (draft / ".git").is_dir():
+            failures.append("A22 실패: allowlist 의 절대경로 항목이 agy 루트 밖 폴더를 지움")
+        if code != 2:
+            failures.append(f"A22 실패: 종료 코드 {code} (기대 2)")
+
+    # A23: allowlist 에 .. 가 들어가도(--force) agy 루트 위를 지우지 않는다
+    with tempfile.TemporaryDirectory() as td:
+        home = make_home(td, ["a"])
+        mod = load_module(home)
+        cfg = home / ".gemini" / "config" / "mcp_config.json"
+        cfg.write_text("{}\n", encoding="utf-8")
+        (home / ".gemini" / "agy-skills.txt").write_text("a\n..\n", encoding="utf-8")
+        run_main(mod, "--force")
+        if not cfg.exists():
+            failures.append("A23 실패: allowlist 의 .. 항목이 agy 루트 위 파일을 지움")
+
+    # A25: allowlist 에 잘못된 항목만 있으면 유효 이름 0개로 진행해 정리하지 않고 종료 1
+    with tempfile.TemporaryDirectory() as td:
+        home = make_home(td, ["a"])
+        mod = load_module(home)
+        run_main(mod)
+        (home / ".gemini" / "agy-skills.txt").write_text("../a\n", encoding="utf-8")
+        code = run_main(mod)
+        if not (mod.AGY_ROOT / "a").is_symlink():
+            failures.append("A25 실패: 잘못된 항목만 있는 allowlist 로 기존 링크가 정리됨")
+        if code != 1:
+            failures.append(f"A25 실패: 종료 코드 {code} (기대 1)")
+
+    # A24: Windows 분기에서 복사본 안에 스킬이 만든 제외 대상 파일(토큰 등)이 있으면 교체·정리하지 않는다
+    for phase in ("replace", "cleanup"):
+        with tempfile.TemporaryDirectory() as td:
+            home = make_home(td, ["a"])
+            mod = load_module(home)
+            mod.IS_WINDOWS = True
+            run_main(mod)  # 첫 복사 + 기록
+            token = mod.AGY_ROOT / "a" / "credentials" / "token.json"
+            token.parent.mkdir()
+            token.write_text("{}\n", encoding="utf-8")
+            if phase == "replace":
+                (mod.CANONICAL_ROOT / "a" / "SKILL.md").write_text(SKILL_MD.format(name="a") + "갱신\n", encoding="utf-8")
+            else:
+                (home / ".gemini" / "agy-skills.txt").write_text("\n", encoding="utf-8")
+                mod.CANONICAL_ROOT.joinpath("b").mkdir()
+                (mod.CANONICAL_ROOT / "b" / "SKILL.md").write_text(SKILL_MD.format(name="b"), encoding="utf-8")
+                (home / ".gemini" / "agy-skills.txt").write_text("b\n", encoding="utf-8")
+            code = run_main(mod)
+            if not token.exists():
+                failures.append(f"A24 실패({phase}): 복사본 안 토큰이 지워짐")
+            if code != 2:
+                failures.append(f"A24 실패({phase}): 종료 코드 {code} (기대 2)")
 
     if failures:
         print("\n".join(failures))

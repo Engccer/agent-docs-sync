@@ -14,7 +14,7 @@ NFD 별형 경로를 NFC 실파일로 해석(resolve)하므로 **살아 있는 A
       상태에 NFD 구키가 잔존하지 않는다
   T4  진짜 고아(CLAUDE.md 삭제됨)는 여전히 정리된다
   T5·T6  접근 불가 경로 (test_unreachable_folder 참조)
-  T7~T21 스킬 미러링 안전 가드, 고아 정리 최종 가드 (test_skill_safety 참조)
+  T7~T27 스킬 미러링 안전 가드, 고아 정리 최종 가드 (test_skill_safety 참조)
 
 실행: python tests/test_sync_agent_docs.py  (표준 라이브러리만 사용, 종료 코드 0=통과)
 """
@@ -144,7 +144,7 @@ def run_main(mod, *argv: str) -> int:
 
 
 def test_skill_safety() -> list[str]:
-    """T7~T21 — 스킬 미러링 안전 가드와 고아 정리 최종 가드.
+    """T7~T27 — 스킬 미러링 안전 가드와 고아 정리 최종 가드.
 
       T7  .claude/skills/ 최상위에 symlink 가 있으면(정본 방향 역전 의심) 미러링을 멈추고
           .agents/skills/ 의 파일을 지우지 않으며 종료 코드 2 를 낸다
@@ -162,6 +162,11 @@ def test_skill_safety() -> list[str]:
       T19 .envrc·확장자 없는 secrets 파일도 제외
       T20 원본 루트가 생성물 안쪽을 가리키면 멈춘다
       T21 원본 안 junction 이 생성물 안을 가리키면 멈춘다(junction 모사)
+      T22 생성물 루트(.agents/skills·.agents)가 프로젝트 안 다른 폴더를 가리키는 링크여도 멈춘다
+      T24 원본 안 파일 symlink 도 멈춘다(밖의 비밀 내용이 복제되지 않게)
+      T25 제외 이름의 symlink 폴더는 복제하지도 막지도 않는다
+      T26 credentials*.json·*service*account*.json·*.p12·*.pfx 도 제외
+      T27 원본 루트가 생성물의 상위를 가리키면 멈춘다
     """
     failures = []
     if os.name == "nt":
@@ -486,6 +491,101 @@ def test_skill_safety() -> list[str]:
             failures.append("T21 실패: 생성물을 가리키는 junction 때문에 .env 가 지워짐")
         if code != 2:
             failures.append(f"T21 실패: 종료 코드 {code} (기대 2)")
+
+    # T22·T23: 생성물 루트(.agents/skills·.agents)가 프로젝트 안 다른 폴더를 가리키는 링크여도 멈춘다
+    for which in (".agents/skills", ".agents"):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            (root / "CLAUDE.md").write_text("# 루트\n", encoding="utf-8")
+            k = root / ".claude" / "skills" / "k"
+            k.mkdir(parents=True)
+            (k / "SKILL.md").write_text(SKILL_MD.format(name="k"), encoding="utf-8")
+            target = root / "tools" / "codex"
+            (target / "skills" / "review").mkdir(parents=True)
+            (target / "skills" / "review" / "SKILL.md").write_text(SKILL_MD.format(name="review"), encoding="utf-8")
+            if which == ".agents":
+                (root / ".agents").symlink_to(target, target_is_directory=True)
+            else:
+                (root / ".agents").mkdir()
+                (root / ".agents" / "skills").symlink_to(target / "skills", target_is_directory=True)
+            mod = load_module(root)
+            code = run_main(mod)
+            if not (target / "skills" / "review" / "SKILL.md").exists():
+                failures.append(f"T22 실패({which}): 링크 너머 프로젝트 안 폴더의 파일이 지워짐")
+            if code != 2:
+                failures.append(f"T22 실패({which}): 종료 코드 {code} (기대 2)")
+
+    # T24: 원본 안 파일 symlink(밖의 비밀 파일 등)는 내용이 복제되지 않게 멈춘다
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td).resolve()
+        root = base / "proj"
+        k = root / ".claude" / "skills" / "k"
+        k.mkdir(parents=True)
+        (root / "CLAUDE.md").write_text("# 루트\n", encoding="utf-8")
+        (k / "SKILL.md").write_text(SKILL_MD.format(name="k"), encoding="utf-8")
+        secret = base / "config.yaml"
+        secret.write_text("API_KEY=sk-live-123\n", encoding="utf-8")
+        (k / "config.yaml").symlink_to(secret)
+        mod = load_module(root)
+        code = run_main(mod)
+        out = root / ".agents" / "skills" / "k" / "config.yaml"
+        if out.exists():
+            failures.append("T24 실패: 원본의 파일 symlink 내용이 생성물로 복제됨")
+        if code != 2:
+            failures.append(f"T24 실패: 종료 코드 {code} (기대 2)")
+
+    # T25: 제외 이름의 symlink 폴더(credentials → 공용 폴더)는 복제하지도 막지도 않는다
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td).resolve()
+        root = base / "proj"
+        k = root / ".claude" / "skills" / "k"
+        k.mkdir(parents=True)
+        (root / "CLAUDE.md").write_text("# 루트\n", encoding="utf-8")
+        (k / "SKILL.md").write_text(SKILL_MD.format(name="k"), encoding="utf-8")
+        shared = base / "shared-creds"
+        shared.mkdir()
+        (shared / "token.json").write_text("{}\n", encoding="utf-8")
+        (k / "credentials").symlink_to(shared, target_is_directory=True)
+        mod = load_module(root)
+        code = run_main(mod)
+        if (root / ".agents" / "skills" / "k" / "credentials").exists():
+            failures.append("T25 실패: 제외 이름 폴더가 복제됨")
+        if code != 0:
+            failures.append(f"T25 실패: 제외 이름 symlink 폴더 때문에 종료 코드 {code} (기대 0)")
+
+    # T26: 흔한 자격증명 이름도 제외
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td).resolve()
+        (root / "CLAUDE.md").write_text("# 루트\n", encoding="utf-8")
+        k = root / ".claude" / "skills" / "k"
+        k.mkdir(parents=True)
+        (k / "SKILL.md").write_text(SKILL_MD.format(name="k"), encoding="utf-8")
+        names = ("credentials.json", "service-account.json", "cert.p12", "cert.pfx")
+        for n in names:
+            (k / n).write_text("x\n", encoding="utf-8")
+        mod = load_module(root)
+        run_main(mod)
+        for n in names:
+            if (root / ".agents" / "skills" / "k" / n).exists():
+                failures.append(f"T26 실패: {n} 이 미러링됨")
+
+    # T27: 원본 루트가 생성물의 상위(.agents)를 가리키면(원본 ⊃ 생성물) 멈춘다
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td).resolve()
+        (root / "CLAUDE.md").write_text("# 루트\n", encoding="utf-8")
+        k = root / ".agents" / "skills" / "k"
+        k.mkdir(parents=True)
+        (k / "SKILL.md").write_text(SKILL_MD.format(name="k"), encoding="utf-8")
+        (k / "notes.md").write_text("x\n", encoding="utf-8")
+        (root / ".claude").mkdir()
+        (root / ".claude" / "skills").symlink_to(root / ".agents", target_is_directory=True)
+        mod = load_module(root)
+        code = run_main(mod)
+        for rel in ("SKILL.md", "notes.md"):
+            if not (k / rel).exists():
+                failures.append(f"T27 실패: 원본이 생성물 상위를 가리킬 때 {rel} 이 지워짐")
+        if code != 2:
+            failures.append(f"T27 실패: 종료 코드 {code} (기대 2)")
     return failures
 
 

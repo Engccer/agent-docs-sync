@@ -43,6 +43,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import sys
 from pathlib import Path
 
@@ -67,7 +68,7 @@ EXCLUDE_FILES = {"desktop.ini", ".DS_Store", "accounts.json", ".envrc", "secrets
 EXCLUDE_GLOBS = (
     "*.pyc", "*.pyo",
     "*token*.json", "client_secret*.json", "*.token", "*.key", "*.pem",
-    ".env", ".env.*", "secrets.*",
+    ".env", ".env.*", "secrets.*", "credentials*.json", "*service*account*.json", "*.p12", "*.pfx",
 )
 
 LIST_HEADER = """\
@@ -106,7 +107,15 @@ def is_link_dir(p: Path) -> bool:
     junction 을 물리 폴더로 오인하면 hash_tree 가 타깃(정본)을 뚫고 해시해
     "이미 최신"으로 오판하고, agy 는 여전히 스킬을 못 보는 침묵 실패가 된다.
     """
-    return p.is_symlink() or (hasattr(p, "is_junction") and p.is_junction())
+    if p.is_symlink():
+        return True
+    if hasattr(p, "is_junction"):
+        return p.is_junction()
+    try:  # 3.11 이하 Windows: reparse tag 로 junction 만 판정
+        tag = getattr(os.lstat(p), "st_reparse_tag", 0)
+    except OSError:
+        return False
+    return tag != 0 and tag == getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", -1)
 
 
 def same_or_inside(path: Path, base: Path) -> bool:
@@ -196,6 +205,21 @@ def hash_tree(root: Path, apply_excludes: bool = True) -> dict[str, str]:
                     digest.update(chunk)
             hashes[full.relative_to(root).as_posix()] = digest.hexdigest()
     return hashes
+
+
+def excluded_items(root: Path) -> list[str]:
+    """복사에서 빠지는 항목(.env·credentials/·.venv 등) 중 root 안에 있는 것. 스킬이 agy 쪽
+    복사본 안에서 만든 토큰처럼 그 자리가 유일한 사본일 수 있어, 지우기 전에 본다."""
+    found: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        for d in dirnames:
+            if is_excluded(d, True):
+                found.append((Path(dirpath) / d).relative_to(root).as_posix() + "/")
+        for fn in filenames:
+            if is_excluded(fn, False):
+                found.append((Path(dirpath) / fn).relative_to(root).as_posix())
+        dirnames[:] = [d for d in dirnames if not is_excluded(d, True)]
+    return found
 
 
 def describe_diff(baseline: dict[str, str], current: dict[str, str], limit: int = 5) -> str:
@@ -308,6 +332,12 @@ def materialize_windows(
         return ("이미 최신", None)
 
     if dst_hashes is not None and not force:
+        extra = excluded_items(dst)
+        if extra:
+            return (
+                "제외 대상 있음(건너뜀)",
+                f"agy 복사본 안에 복사 대상이 아닌 항목이 있음(스킬이 만든 토큰일 수 있음): {', '.join(extra[:5])}",
+            )
         if baseline is not None and dst_hashes != baseline:
             return (
                 "드리프트(건너뜀)",
@@ -415,8 +445,12 @@ def main() -> int:
         return 1
 
     names = load_list(args.list)
+    bad = [n for n in names if n in (".", "..") or "/" in n or "\\" in n or ":" in n or os.path.isabs(n)]
+    names = [n for n in names if n not in bad]
     if not names:
-        print(f"오류: allowlist 가 비어 있다: {args.list}", file=sys.stderr)
+        print(f"오류: allowlist 에 유효한 스킬 이름이 없다: {args.list}", file=sys.stderr)
+        for n in bad:
+            print(f"  무시한 항목: {n} (스킬 이름 하나여야 한다. 경로·'.'·'..' 불가)", file=sys.stderr)
         return 1
 
     # agy 루트나 그 상위 경로(~/.gemini, ~/.gemini/config)가 링크면 가리키는 곳(정본이나
@@ -449,7 +483,7 @@ def main() -> int:
     manifest = load_manifest() if IS_WINDOWS else {}
     force_all = args.force is not None and not args.force
     force_names = set(args.force or [])
-    warnings: list[str] = []
+    warnings: list[str] = [f"{n}: allowlist 항목은 스킬 이름 하나여야 한다(경로·'.'·'..' 불가) — 무시함" for n in bad]
     skipped: list[str] = []
     done = 0
 
@@ -511,6 +545,12 @@ def main() -> int:
                 and not (force_all or entry.name in force_names)
             ):
                 baseline = manifest.get(entry.name)
+                extra = excluded_items(entry)
+                if extra:
+                    skipped.append(
+                        f"{entry.name}: allowlist 에서 빠졌지만 복사 대상이 아닌 항목이 있음({', '.join(extra[:5])}) — 삭제하지 않음"
+                    )
+                    continue
                 try:
                     current = hash_tree(entry)
                 except OSError as exc:

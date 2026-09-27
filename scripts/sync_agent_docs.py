@@ -53,6 +53,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import sys
 import unicodedata
 from fnmatch import fnmatch
@@ -102,7 +103,7 @@ SKILL_EXCLUDE_FILES = {"desktop.ini", ".DS_Store", "accounts.json", ".envrc", "s
 SKILL_EXCLUDE_GLOBS = (
     "*.pyc", "*.pyo",
     "*token*.json", "client_secret*.json", "*.token", "*.key", "*.pem",
-    ".env", ".env.*", "secrets.*",
+    ".env", ".env.*", "secrets.*", "credentials*.json", "*service*account*.json", "*.p12", "*.pfx",
 )
 # 고아 정리에서 "무시"할 OS/캐시 잡파일. Google Drive 는 폴더마다 desktop.ini 를 자동
 # 생성하므로, 이를 고아로 보고 지우면 Drive 가 다시 만들어 매 실행이 churn 된다 → 그냥 둔다.
@@ -389,8 +390,17 @@ def is_excluded_skill_file(fn: str) -> bool:
 
 
 def is_link_dir(p: Path) -> bool:
-    """symlink 또는 Windows junction 인가(junction 판정 is_junction 은 3.12+)."""
-    return p.is_symlink() or (hasattr(p, "is_junction") and p.is_junction())
+    """symlink 또는 Windows junction 인가. Path.is_junction 이 없는 3.11 이하 Windows 는
+    lstat 의 reparse tag 로 판정한다(OneDrive 등 다른 reparse point 는 junction 이 아니다)."""
+    if p.is_symlink():
+        return True
+    if hasattr(p, "is_junction"):
+        return p.is_junction()
+    try:
+        tag = getattr(os.lstat(p), "st_reparse_tag", 0)
+    except OSError:
+        return False
+    return tag != 0 and tag == getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", -1)
 
 
 def same_or_inside(path: Path, base: Path) -> bool:
@@ -425,13 +435,21 @@ def skill_direction_problems() -> list[str]:
     - .claude/skills 와 .agents/skills 가 실체로 겹친다(어느 층의 링크든).
     - 생성물(.agents/skills)이 프로젝트 밖 실체이거나 그 안에 링크(파일·폴더, junction 포함)가
       있다. 스크립트는 생성물에 링크를 만들지 않으므로 있으면 누군가 건 것이다.
+    - .agents 나 .agents/skills 자체가 링크다(프로젝트 안 다른 폴더를 가리켜도 그 폴더를 지운다).
     - 원본(.claude/skills) 안의 폴더 링크가 생성물과 얽혀 있거나(서로 안쪽을 가리킴),
       symlink 라 walk 가 따라가지 못한다(그 내용이 원본 목록에서 빠져 고아 정리가 생성물의
       같은 경로를 지운다). 밖을 가리키는 Windows junction 은 walk 가 따라가 정상 미러링된다.
+    - 원본 안의 파일 symlink: 원본 저장소엔 링크만 있는데 생성물엔 가리키는 내용(밖의 비밀 등)이
+      그대로 복제된다. 복제하지 않는 제외 이름은 링크여도 문제 삼지 않는다.
     """
     if same_or_inside(SKILLS_SRC, SKILLS_DST) or same_or_inside(SKILLS_DST, SKILLS_SRC):
         return [f".claude/skills 와 .agents/skills 가 같은 실체를 가리킴 ({os.path.realpath(SKILLS_SRC)})"]
     problems: list[str] = []
+    for q in (ROOT / ".agents", SKILLS_DST):
+        if is_link_dir(q):
+            problems.append(f"{q.relative_to(ROOT).as_posix()} 가 링크 → {os.path.realpath(q)}")
+    if problems:
+        return problems
     if not same_or_inside(SKILLS_DST, ROOT):
         problems.append(f".agents/skills 가 프로젝트 밖 실체 → {os.path.realpath(SKILLS_DST)}")
     elif SKILLS_DST.exists():
@@ -442,10 +460,17 @@ def skill_direction_problems() -> list[str]:
                     rel = full.relative_to(SKILLS_DST).as_posix()
                     problems.append(f".agents/skills/{rel} (링크 → {os.path.realpath(full)})")
             dirnames[:] = [d for d in dirnames if not is_link_dir(Path(dirpath) / d)]
-    for dirpath, dirnames, _filenames in os.walk(SKILLS_SRC):
+    for dirpath, dirnames, filenames in os.walk(SKILLS_SRC):
+        for fn in filenames:
+            full = Path(dirpath) / fn
+            if full.is_symlink() and not is_excluded_skill_file(fn):
+                rel = full.relative_to(SKILLS_SRC).as_posix()
+                problems.append(f".claude/skills/{rel} (파일 symlink → {os.path.realpath(full)})")
         keep = []
         for d in dirnames:
             full = Path(dirpath) / d
+            if d in SKILL_EXCLUDE_DIRS:
+                continue  # 복제하지 않는 폴더는 링크여도 위험이 없다
             if is_link_dir(full):
                 rel = full.relative_to(SKILLS_SRC).as_posix()
                 if same_or_inside(full, SKILLS_DST) or same_or_inside(SKILLS_DST, full):
@@ -455,7 +480,7 @@ def skill_direction_problems() -> list[str]:
                     problems.append(f".claude/skills/{rel} (symlink → {os.path.realpath(full)})")
                     continue
             keep.append(d)
-        dirnames[:] = [d for d in keep if d not in SKILL_EXCLUDE_DIRS]
+        dirnames[:] = keep
     return problems
 
 
