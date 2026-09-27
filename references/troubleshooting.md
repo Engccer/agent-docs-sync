@@ -37,7 +37,7 @@ walk 가 열지 못한 폴더(예: SSH 세션에서 RedirectionGuard 가 클라�
 - `name`이 폴더명과 불일치 (표준은 일치 요구)
 - `description` 비어 있음 또는 1024자 초과
 
-PyYAML이 없으면 휴리스틱 폴백이 돈다. 폴백은 block scalar `description`의 빈 값·길이 초과와, 최상위 plain scalar 값의 `: ` 말고 다른 YAML 오류(닫히지 않은 괄호 등)는 잡지 못한다.
+PyYAML이 없으면 휴리스틱 폴백이 돈다. 폴백은 대표적으로 block scalar나 따옴표로 감싼 `description`의 빈 값·길이 초과와, 최상위 plain scalar 값의 `: ` 말고 다른 YAML 오류(닫히지 않은 괄호 등)를 놓치고, 따옴표로 감싼 `name`(`name: "qa"`)을 폴더명 불일치로 잘못 경고한다. 정확한 판정이 필요하면 PyYAML을 설치하고 다시 실행한다.
 
 **해법(=작성 규칙).** `description`에 콜론·따옴표 등이 들어갈 수 있으므로 **항상 block scalar(`>-`)로 감싼다**:
 

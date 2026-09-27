@@ -26,7 +26,7 @@ python ~/.claude/skills/agent-docs-sync/scripts/sync_agy_skills.py --init    # a
 python ~/.claude/skills/agent-docs-sync/scripts/sync_agy_skills.py           # 반영
 ```
 
-실행 전 필수 확인(정본 방향), 셋업 절차, 종료 코드, 발산 처리, 보안 정책은 [`SKILL.md`](SKILL.md)에, Antigravity 사용자 레벨은 [`references/agy.md`](references/agy.md)에 있다.
+실행 전 필수 확인(정본 방향), 셋업 절차, 종료 코드, 발산 처리, 보안 정책은 [`SKILL.md`](SKILL.md)에, Antigravity 사용자 레벨과 그 실행 전 확인은 [`references/agy.md`](references/agy.md)에 있다.
 
 ## 라이선스
 

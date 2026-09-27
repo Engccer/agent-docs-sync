@@ -142,7 +142,7 @@ python sync_agent_docs.py --check    # 재실행 시 모두 "[최신]"이어야 
 - **`CLAUDE.md`가 최신·정본이 맞다** → `--force`로 정본 기준 덮어쓴다.
 - **`AGENTS.md` 쪽에 살릴 내용이 있다** → 먼저 그 내용을 `CLAUDE.md`로 옮긴 뒤 `--force`로 실행한다. 옮긴 결과가 `AGENTS.md` 본문과 글자 하나까지 같지 않으면 `--force` 없이는 발산 경고가 계속된다.
 
-고아 정리는 대응 `CLAUDE.md`가 사라진 `AGENTS.md` 가운데 자동생성 배너 마커가 있는 것만 지운다(`[정리]`). 손으로 만든 `AGENTS.md`는 남긴다.
+고아 정리는 대응 `CLAUDE.md`가 사라진 `AGENTS.md` 가운데 자동생성 배너 마커가 있는 것만 지운다(`[정리]`). 손으로 만든 `AGENTS.md`는 남긴다. 배너를 남긴 채 본문만 고친(발산 중인) `AGENTS.md`는 짝 `CLAUDE.md`를 지우면 함께 지워지니, 살릴 내용은 `CLAUDE.md`를 지우기 전에 옮긴다.
 
 `--force`는 `AGENTS.md` 발산 판정에만 작용한다. 스킬 미러링은 `--force`와 무관하게 늘 정본 기준이라, `.agents/skills/`에 직접 둔 파일(자격증명 포함)은 매 실행 고아로 지워지고 `_GENERATED.md`는 매번 다시 쓰인다.
 
