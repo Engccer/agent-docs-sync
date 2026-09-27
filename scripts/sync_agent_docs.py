@@ -98,7 +98,7 @@ SKILLS_DST = ROOT / ".agents" / "skills"
 # 보안: 자격증명 디렉터리/파일은 생성물로 복제하지 않는다(노출면·회전 부담 2배 방지).
 # 청결: 캐시·OS 잡파일도 제외.
 SKILL_EXCLUDE_DIRS = {"credentials", "secrets", "__pycache__", ".git", ".idea", "node_modules", ".venv"}
-SKILL_EXCLUDE_FILES = {"desktop.ini", ".DS_Store", "accounts.json"}
+SKILL_EXCLUDE_FILES = {"desktop.ini", ".DS_Store", "accounts.json", ".envrc", "secrets"}
 SKILL_EXCLUDE_GLOBS = (
     "*.pyc", "*.pyo",
     "*token*.json", "client_secret*.json", "*.token", "*.key", "*.pem",
@@ -401,6 +401,12 @@ def same_or_inside(path: Path, base: Path) -> bool:
     except OSError:
         return False
     real = Path(os.path.realpath(path))
+    if b.st_ino == 0:  # 파일 식별자를 주지 않는 파일시스템: 경로 문자열로 대신한다
+        base_real = os.path.normcase(os.path.realpath(base))
+        try:
+            return os.path.commonpath([os.path.normcase(str(real)), base_real]) == base_real
+        except ValueError:
+            return False
     for q in (real, *real.parents):
         try:
             s = os.stat(q)
@@ -412,28 +418,44 @@ def same_or_inside(path: Path, base: Path) -> bool:
 
 
 def skill_direction_problems() -> list[str]:
-    """스킬 미러링이 원본을 지울 수 있는 링크 구성을 찾아 설명 목록으로 돌려준다(빈 목록 = 안전).
+    """스킬 미러링이 원본이나 프로젝트 밖을 지우거나 덮을 수 있는 링크 구성을 찾아 설명 목록으로
+    돌려준다(빈 목록 = 안전). 고아 정리는 생성물 트리를 walk 하며 지우고 복사는 생성물 경로에
+    쓰므로, 두 트리에 링크가 섞이면 멈추는 것을 원칙으로 한다.
 
-    - .claude/skills 와 .agents/skills 가 실체로 겹친다(둘 중 하나나 상위 .claude/.agents 가
-      다른 쪽을 가리키는 링크): 고아 정리가 미러링 제외 파일(.git·.env·credentials 등)을
-      "정본에 없음"으로 보고 원본에서 지운다.
-    - .claude/skills 안(어느 깊이든)의 폴더 symlink: walk 가 따라가지 않아 그 내용이 원본 목록에서
-      빠지고 고아 정리가 .agents/skills 의 같은 경로를 지운다(역전 환경이면 실제 정본).
-    - .claude/skills 안의 junction 이 .agents/skills 안을 가리킨다: walk 는 따라가지만 원본과
-      생성물이 같은 파일이 되어 위와 같은 삭제가 난다. 밖을 가리키는 junction 은 정상 미러링된다.
+    - .claude/skills 와 .agents/skills 가 실체로 겹친다(어느 층의 링크든).
+    - 생성물(.agents/skills)이 프로젝트 밖 실체이거나 그 안에 링크(파일·폴더, junction 포함)가
+      있다. 스크립트는 생성물에 링크를 만들지 않으므로 있으면 누군가 건 것이다.
+    - 원본(.claude/skills) 안의 폴더 링크가 생성물과 얽혀 있거나(서로 안쪽을 가리킴),
+      symlink 라 walk 가 따라가지 못한다(그 내용이 원본 목록에서 빠져 고아 정리가 생성물의
+      같은 경로를 지운다). 밖을 가리키는 Windows junction 은 walk 가 따라가 정상 미러링된다.
     """
     if same_or_inside(SKILLS_SRC, SKILLS_DST) or same_or_inside(SKILLS_DST, SKILLS_SRC):
         return [f".claude/skills 와 .agents/skills 가 같은 실체를 가리킴 ({os.path.realpath(SKILLS_SRC)})"]
     problems: list[str] = []
+    if not same_or_inside(SKILLS_DST, ROOT):
+        problems.append(f".agents/skills 가 프로젝트 밖 실체 → {os.path.realpath(SKILLS_DST)}")
+    elif SKILLS_DST.exists():
+        for dirpath, dirnames, filenames in os.walk(SKILLS_DST):
+            for name in dirnames + filenames:
+                full = Path(dirpath) / name
+                if is_link_dir(full) or full.is_symlink():
+                    rel = full.relative_to(SKILLS_DST).as_posix()
+                    problems.append(f".agents/skills/{rel} (링크 → {os.path.realpath(full)})")
+            dirnames[:] = [d for d in dirnames if not is_link_dir(Path(dirpath) / d)]
     for dirpath, dirnames, _filenames in os.walk(SKILLS_SRC):
-        for d in list(dirnames):
+        keep = []
+        for d in dirnames:
             full = Path(dirpath) / d
-            rel = full.relative_to(SKILLS_SRC).as_posix()
-            if full.is_symlink():
-                problems.append(f"{rel} (symlink → {os.path.realpath(full)})")
-            elif is_link_dir(full) and same_or_inside(full, SKILLS_DST):
-                problems.append(f"{rel} (junction → .agents/skills 안)")
-        dirnames[:] = [d for d in dirnames if d not in SKILL_EXCLUDE_DIRS]
+            if is_link_dir(full):
+                rel = full.relative_to(SKILLS_SRC).as_posix()
+                if same_or_inside(full, SKILLS_DST) or same_or_inside(SKILLS_DST, full):
+                    problems.append(f".claude/skills/{rel} (링크가 .agents/skills 와 얽힘)")
+                    continue
+                if full.is_symlink():
+                    problems.append(f".claude/skills/{rel} (symlink → {os.path.realpath(full)})")
+                    continue
+            keep.append(d)
+        dirnames[:] = [d for d in keep if d not in SKILL_EXCLUDE_DIRS]
     return problems
 
 
@@ -477,8 +499,8 @@ def sync_skills(args) -> tuple[bool, list[str]]:
         print(
             "[스킬 방향 경고] 미러링이 원본을 지울 수 있는 링크가 있어 스킬 미러링을 건너뜁니다:\n"
             + "\n".join(f"          - {x}" for x in linked)
-            + "\n        ↳ .agents/skills/ 를 가리키면 정본 방향이 역전된 환경이라 미러링이 필요 없습니다.\n"
-            "          외부 경로를 가리키는 symlink 는 실제 폴더로 두어야 미러링됩니다.",
+            + "\n        ↳ 원본과 생성물이 링크로 얽혔으면 정본 방향부터 확인하세요(역전이면 미러링이 필요 없습니다).\n"
+            "          생성물(.agents/skills) 안의 링크는 지우고, 원본 안의 symlink 폴더는 실제 폴더로 두어야 미러링됩니다.",
             file=sys.stderr,
         )
         return False, linked

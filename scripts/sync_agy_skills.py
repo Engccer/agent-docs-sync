@@ -20,7 +20,7 @@ sync_agent_docs.py 가 "프로젝트 레벨"(CLAUDE.md → AGENTS.md, .claude/sk
   allowlist 밖이면 지우지 않고 건너뛴다(--force 로 무시).
 - 정본 실체 보호: 지우거나 바꾸려는 agy 루트 안 실제 폴더가 ~/.claude/skills 의 어느 항목의
   실체와 같거나 그 조상·자손이면(파일 동일성으로 판정) --force 여도 건드리지 않는다.
-- agy 루트 자체가 링크이거나 정본 루트와 겹치면 아무것도 하지 않고 종료 1.
+- agy 루트나 그 상위 경로(~/.gemini, ~/.gemini/config)가 링크이거나 정본 루트와 겹치면 아무것도 하지 않고 종료 1.
 
 사용법:
     python <agent-docs-sync 스킬>/scripts/sync_agy_skills.py             # 동기화
@@ -33,7 +33,7 @@ sync_agent_docs.py 가 "프로젝트 레벨"(CLAUDE.md → AGENTS.md, .claude/sk
   0  전부 최신이거나 정상 반영됨(경고 없음)
   2  frontmatter 검증 경고, 목록에 있으나 정본이 없는 스킬, 또는 드리프트·실제 폴더로 건너뛴
      스킬 — 나머지는 정상 반영됨. 실패가 아니라 "확인 필요" 신호.
-  1  기타 오류(allowlist 부재, agy 루트가 링크이거나 정본 루트와 겹침 등)
+  1  기타 오류(allowlist 부재, agy 루트 경로에 링크가 있거나 정본 루트와 겹침 등)
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ IS_WINDOWS = os.name == "nt"
 
 # sync_agent_docs.py 의 SKILL_EXCLUDE_* 와 같은 취지의 정책(자격증명·캐시·OS 잡파일 제외, 여기는 venv 도 제외).
 EXCLUDE_DIRS = {"credentials", "secrets", "__pycache__", ".git", ".idea", "node_modules", ".venv", "venv"}
-EXCLUDE_FILES = {"desktop.ini", ".DS_Store", "accounts.json"}
+EXCLUDE_FILES = {"desktop.ini", ".DS_Store", "accounts.json", ".envrc", "secrets"}
 EXCLUDE_GLOBS = (
     "*.pyc", "*.pyo",
     "*token*.json", "client_secret*.json", "*.token", "*.key", "*.pem",
@@ -76,7 +76,7 @@ LIST_HEADER = """\
 # 한 줄에 스킬 이름 하나. '#' 이후는 주석. 이름은 ~/.claude/skills/<name> 을 가리킨다.
 # 반영: python <agent-docs-sync 스킬>/scripts/sync_agy_skills.py
 #
-# 여기 없는 스킬은 agy 글로벌 루트에서 제거된다(정본은 건드리지 않음).
+# 여기 없는 스킬은 agy 글로벌 루트에서 제거된다(실제 폴더·정본 실체는 건너뛴다. 정본은 건드리지 않음).
 """
 
 
@@ -117,6 +117,12 @@ def same_or_inside(path: Path, base: Path) -> bool:
     except OSError:
         return False
     real = Path(os.path.realpath(path))
+    if b.st_ino == 0:  # 파일 식별자를 주지 않는 파일시스템: 경로 문자열로 대신한다
+        base_real = os.path.normcase(os.path.realpath(base))
+        try:
+            return os.path.commonpath([os.path.normcase(str(real)), base_real]) == base_real
+        except ValueError:
+            return False
     for q in (real, *real.parents):
         try:
             s = os.stat(q)
@@ -127,18 +133,41 @@ def same_or_inside(path: Path, base: Path) -> bool:
     return False
 
 
-def canonical_entities() -> list[Path]:
-    """~/.claude/skills 의 모든 항목(allowlist 와 무관)과 그 루트. 지우기 전 보호 대상."""
-    out = [CANONICAL_ROOT]
-    for e in CANONICAL_ROOT.iterdir():
-        if e.exists():
-            out.append(e)
-    return out
+def _file_id(p: Path) -> tuple[int, int] | None:
+    try:
+        s = os.stat(p)
+    except OSError:
+        return None
+    return (s.st_dev, s.st_ino)
 
 
-def touches_canonical(p: Path, protected: list[Path]) -> bool:
-    """p(agy 루트 안 실제 폴더)를 지우면 정본이 사라지는가: 정본 실체와 같거나 그 조상·자손."""
-    return any(same_or_inside(p, c) or same_or_inside(c, p) for c in protected)
+def canonical_entities() -> tuple[set, set]:
+    """지우기 전 보호 대상: ~/.claude/skills 루트와 모든 항목(allowlist 와 무관)의 실체.
+    (실체들의 파일 식별자 집합, 그 조상들의 식별자 집합) 을 한 번만 계산해 돌려준다."""
+    exact: set = set()
+    ancestors: set = set()
+    for c in [CANONICAL_ROOT, *CANONICAL_ROOT.iterdir()]:
+        real = Path(os.path.realpath(c))
+        fid = _file_id(real)
+        if fid is None:
+            continue
+        exact.add(fid)
+        for q in real.parents:
+            qid = _file_id(q)
+            if qid is not None:
+                ancestors.add(qid)
+    return exact, ancestors
+
+
+def touches_canonical(p: Path, protected: tuple[set, set]) -> bool:
+    """p(agy 루트 안 실제 폴더)를 지우면 정본이 사라지는가: 정본 실체와 같거나 그 조상·자손.
+    식별자를 주지 않는 파일시스템(st_ino 0)이면 판정할 수 없으므로 보호 쪽으로 본다."""
+    exact, ancestors = protected
+    real = Path(os.path.realpath(p))
+    fid = _file_id(real)
+    if fid is None or fid[1] == 0 or fid in ancestors:
+        return True
+    return any(_file_id(q) in exact for q in (real, *real.parents))
 
 
 def hash_tree(root: Path, apply_excludes: bool = True) -> dict[str, str]:
@@ -148,10 +177,19 @@ def hash_tree(root: Path, apply_excludes: bool = True) -> dict[str, str]:
     for dirpath, dirnames, filenames in os.walk(root):
         if apply_excludes:
             dirnames[:] = [d for d in dirnames if not is_excluded(d, True)]
+        else:
+            # 전부 셀 때 링크는 따라가지 않고 가리키는 곳을 센다(끊어진 링크에서 죽지 않게).
+            for name in dirnames + filenames:
+                full = Path(dirpath) / name
+                if full.is_symlink():
+                    hashes[full.relative_to(root).as_posix()] = "link:" + os.readlink(full)
+            dirnames[:] = [d for d in dirnames if not (Path(dirpath) / d).is_symlink()]
         for fn in sorted(filenames):
             if apply_excludes and is_excluded(fn, False):
                 continue
             full = Path(dirpath) / fn
+            if not apply_excludes and full.is_symlink():
+                continue
             digest = hashlib.sha256()
             with open(full, "rb") as f:
                 for chunk in iter(lambda: f.read(65536), b""):
@@ -310,7 +348,10 @@ def materialize_posix(
     if real_dir and touches_canonical(dst, protected):
         return ("정본 실체(건너뜀)", f"agy 루트의 {dst.name} 이(가) 정본 실체라 건드리지 않음")
     if real_dir and not force:
-        src_all, dst_all = hash_tree(src, False), hash_tree(dst, False)
+        try:
+            src_all, dst_all = hash_tree(src, False), hash_tree(dst, False)
+        except OSError as exc:
+            return ("실제 폴더(건너뜀)", f"agy 루트의 실제 폴더를 비교하지 못함({exc})")
         if src_all != dst_all:
             return (
                 "실제 폴더(건너뜀)",
@@ -378,13 +419,15 @@ def main() -> int:
         print(f"오류: allowlist 가 비어 있다: {args.list}", file=sys.stderr)
         return 1
 
-    # agy 루트 자체가 링크면 가리키는 곳의 실제 폴더를 정리·교체 대상으로 보게 된다(정본일 수 있다).
-    if is_link_dir(AGY_ROOT):
-        print(f"오류: agy 루트({AGY_ROOT})가 링크다 → {os.path.realpath(AGY_ROOT)}", file=sys.stderr)
-        print("  링크 자체만 지우고(대상은 건드리지 말 것) 실제 폴더로 다시 만든 뒤 실행하라:", file=sys.stderr)
-        print(f"    macOS: rm \"{AGY_ROOT}\"   (끝 슬래시·-r 없이)", file=sys.stderr)
-        print(f"    Windows: rmdir \"{AGY_ROOT}\"   (/s 없이)", file=sys.stderr)
-        return 1
+    # agy 루트나 그 상위 경로(~/.gemini, ~/.gemini/config)가 링크면 가리키는 곳(정본이나
+    # 다른 도구의 스킬 자리일 수 있다)을 정리·교체 대상으로 보게 된다.
+    for q in (AGY_ROOT.parent.parent, AGY_ROOT.parent, AGY_ROOT):
+        if is_link_dir(q):
+            print(f"오류: agy 루트 경로의 {q} 가 링크다 → {os.path.realpath(q)}", file=sys.stderr)
+            print("  링크 자체만 지우고(대상은 건드리지 말 것) 실제 폴더로 다시 만든 뒤 실행하라:", file=sys.stderr)
+            print(f"    macOS: rm \"{q}\"   (끝 슬래시·-r 없이)", file=sys.stderr)
+            print(f"    Windows: rmdir \"{q}\"   (/s 없이)", file=sys.stderr)
+            return 1
 
     # agy 루트와 정본 루트가 겹치면(한쪽이 다른 쪽을 가리키는 링크 등) 정리·교체가 정본을 지운다.
     if AGY_ROOT.exists() and (
@@ -518,8 +561,9 @@ def main() -> int:
         for s in skipped:
             print(f"  - {s}")
         print("  (agy 쪽 수정을 정본에 반영한 뒤 재실행하면 자동 해소되고,")
-        print("   폐기해도 되면 --force <스킬명> 으로 그 스킬만 덮어써라.")
-        print("   '정본 실체' 항목은 --force 로도 풀리지 않는다. 정본을 agy 루트 밖으로 옮겨라.)")
+        print("   폐기해도 되면 --force <스킬명> 으로 그 스킬만 덮어써라.)")
+        if any("정본 실체" in s for s in skipped):
+            print("  ('정본 실체' 항목은 --force 로도 풀리지 않는다. 정본을 agy 루트 밖으로 옮겨라.)")
     if warnings:
         print("경고:")
         for w in warnings:

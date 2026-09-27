@@ -16,12 +16,15 @@ POSIX 는 agy 루트에 symlink 만 걸기 때문에 사본이 없다는 전제�
   A10 정본 루트가 agy 루트를 가리키는 겹침도 --force 와 상관없이 종료 1
   A11 정본과 같아 보여도 agy 쪽에만 제외 대상 파일(.env·.git 등)이 있으면 교체하지 않는다
   A12 allowlist 밖이어도 정본 실체는 --force 로도 지우지 않는다
-  A13 상위 경로 링크로 agy 루트가 정본 실체들 자리여도 --force 로도 지우지 않는다
+  A13 상위 경로 링크로 agy 루트가 정본 실체들 자리여도 --force 로도 지우지 않는다(종료 1)
   A14 대소문자만 다른 경로의 정본 링크도 정본으로 알아본다(대소문자 무시 파일시스템)
   A15 이름 없는 --force 는 정본이 아닌 allowlist 밖 실제 폴더를 정리한다
   A16 Windows 분기(물리 복사)도 정본 실체는 --force 여도 지우지 않는다
   A17 Windows 분기의 물리 복사는 .env·.ENV.*·secrets/ 를 복사하지 않는다
   A18 지우려는 폴더 안쪽에 정본 실체가 있으면(조상 방향) --force 여도 지우지 않는다(POSIX·Windows 분기)
+  A19 agy 루트까지의 상위 경로에 링크가 있으면 아무것도 지우지 않고 종료 1
+  A20 .envrc·확장자 없는 secrets 도 복사 제외
+  A21 agy 쪽 실제 폴더의 끊어진 symlink 에서 죽지 않고 그 스킬만 건너뛴다
 
 실행: python tests/test_sync_agy_skills.py  (표준 라이브러리만 사용, 종료 코드 0=통과. symlink 를 만들므로 Windows 에서는 건너뜀.
       A16·A17 은 IS_WINDOWS 를 켜서 Windows 분기 코드를 POSIX 에서 돌린다)
@@ -265,10 +268,12 @@ def main() -> int:
         mod.AGY_ROOT.rmdir()
         (home / ".gemini" / "config").rmdir()
         (home / ".gemini" / "config").symlink_to(home / ".agents", target_is_directory=True)
-        run_main(mod, "--force")
+        code = run_main(mod, "--force")
         for n in ("kx", "ky"):
             if (other / n).is_symlink() or not (other / n / "SKILL.md").exists():
                 failures.append(f"A13 실패: 상위 경로 링크에서 정본 {n} 이 지워지거나 링크로 바뀜")
+        if code != 1:
+            failures.append(f"A13 실패: agy 루트 상위 경로가 링크인데 종료 코드 {code} (기대 1)")
 
     # A14: 대소문자만 다른 경로로 건 정본 링크(대소문자 무시 파일시스템)도 정본으로 알아본다
     with tempfile.TemporaryDirectory() as td:
@@ -346,6 +351,55 @@ def main() -> int:
             run_main(mod, "--force")
             if not (inner / "SKILL.md").exists():
                 failures.append(f"A18 실패(windows={windows}): 정본 실체를 품은 폴더가 --force 로 지워짐")
+
+    # A19: 상위 경로 링크로 agy 루트가 다른 도구의 스킬 링크 자리가 돼도 그 링크를 지우지 않고 종료 1
+    with tempfile.TemporaryDirectory() as td:
+        home = make_home(td, ["a"])
+        mod = load_module(home)
+        projects = home / "Mac-Projects"
+        other = home / ".agents" / "skills"
+        other.mkdir(parents=True)
+        for n in ("b", "c"):
+            (projects / n).mkdir(parents=True)
+            (projects / n / "SKILL.md").write_text(SKILL_MD.format(name=n), encoding="utf-8")
+            (other / n).symlink_to(projects / n, target_is_directory=True)
+        mod.AGY_ROOT.rmdir()
+        (home / ".gemini" / "config").rmdir()
+        (home / ".gemini" / "config").symlink_to(home / ".agents", target_is_directory=True)
+        code = run_main(mod)
+        for n in ("b", "c"):
+            if not (other / n).is_symlink():
+                failures.append(f"A19 실패: 다른 도구의 스킬 링크 {n} 가 지워짐")
+        if code != 1:
+            failures.append(f"A19 실패: 종료 코드 {code} (기대 1)")
+
+    # A20: .envrc·확장자 없는 secrets 도 복사 제외
+    with tempfile.TemporaryDirectory() as td:
+        mod = load_module(make_home(td, []))
+        for name in (".envrc", "secrets"):
+            if not mod.is_excluded(name, False):
+                failures.append(f"A20 실패: {name} 이 복사 제외 대상이 아님")
+
+    # A21: agy 쪽 실제 폴더에 끊어진 symlink 가 있어도 죽지 않고 건너뛰며 다른 스킬은 반영한다
+    with tempfile.TemporaryDirectory() as td:
+        home = make_home(td, ["a", "b"])
+        mod = load_module(home)
+        dst = mod.AGY_ROOT / "a"
+        (dst / ".venv" / "bin").mkdir(parents=True)
+        (dst / "SKILL.md").write_text(SKILL_MD.format(name="a"), encoding="utf-8")
+        (dst / ".venv" / "bin" / "python").symlink_to(home / "없는-파이썬")
+        try:
+            code = run_main(mod)
+        except OSError as e:
+            code = None
+            failures.append(f"A21 실패: 끊어진 링크에서 예외로 멈춤: {e}")
+        if code is not None:
+            if not (mod.AGY_ROOT / "b").is_symlink():
+                failures.append("A21 실패: 다른 스킬 b 가 반영되지 않음")
+            if not (dst / "SKILL.md").exists() or dst.is_symlink():
+                failures.append("A21 실패: 끊어진 링크가 든 실제 폴더가 교체됨")
+            if code != 2:
+                failures.append(f"A21 실패: 종료 코드 {code} (기대 2)")
 
     if failures:
         print("\n".join(failures))

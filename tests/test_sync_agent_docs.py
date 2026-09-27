@@ -14,7 +14,7 @@ NFD 별형 경로를 NFC 실파일로 해석(resolve)하므로 **살아 있는 A
       상태에 NFD 구키가 잔존하지 않는다
   T4  진짜 고아(CLAUDE.md 삭제됨)는 여전히 정리된다
   T5·T6  접근 불가 경로 (test_unreachable_folder 참조)
-  T7~T14 스킬 미러링 안전 가드, 고아 정리 최종 가드 (test_skill_safety 참조)
+  T7~T21 스킬 미러링 안전 가드, 고아 정리 최종 가드 (test_skill_safety 참조)
 
 실행: python tests/test_sync_agent_docs.py  (표준 라이브러리만 사용, 종료 코드 0=통과)
 """
@@ -144,7 +144,7 @@ def run_main(mod, *argv: str) -> int:
 
 
 def test_skill_safety() -> list[str]:
-    """T7~T14 — 스킬 미러링 안전 가드와 고아 정리 최종 가드.
+    """T7~T21 — 스킬 미러링 안전 가드와 고아 정리 최종 가드.
 
       T7  .claude/skills/ 최상위에 symlink 가 있으면(정본 방향 역전 의심) 미러링을 멈추고
           .agents/skills/ 의 파일을 지우지 않으며 종료 코드 2 를 낸다
@@ -155,6 +155,13 @@ def test_skill_safety() -> list[str]:
       T12 secrets/ 폴더·대소문자 변형은 제외하고 secrets_util.py 같은 코드 파일은 미러링한다
       T13 밖을 가리키는 중첩 symlink 도 멈춘다(옛 미러 보존)
       T14 대소문자만 다른 역전 링크도 겹침으로 알아본다(대소문자 무시 파일시스템에서만)
+      T15 생성물 쪽 스킬이 원본을 가리키는 링크면 멈춘다(junction 모사 포함)
+      T16 생성물 안 파일 symlink 가 있으면 멈춘다(링크를 타고 밖을 덮지 않음)
+      T17 생성물이 프로젝트 밖 실체면 멈춘다
+      T18 생성물 루트가 원본 안쪽을 가리키면 멈춘다
+      T19 .envrc·확장자 없는 secrets 파일도 제외
+      T20 원본 루트가 생성물 안쪽을 가리키면 멈춘다
+      T21 원본 안 junction 이 생성물 안을 가리키면 멈춘다(junction 모사)
     """
     failures = []
     if os.name == "nt":
@@ -328,6 +335,157 @@ def test_skill_safety() -> list[str]:
                 failures.append("T14 실패: 대소문자 변형 역전 링크에서 원본 .git 이 지워짐")
             if code != 2:
                 failures.append(f"T14 실패: 종료 코드 {code} (기대 2)")
+
+    # T15: 생성물 쪽 스킬이 원본을 가리키는 링크면 멈춘다(Windows junction 처럼 walk 가 따라가도 안전)
+    for follow in (False, True):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            (root / "CLAUDE.md").write_text("# 루트\n", encoding="utf-8")
+            k = root / ".claude" / "skills" / "k"
+            (k / ".git").mkdir(parents=True)
+            (k / "SKILL.md").write_text(SKILL_MD.format(name="k"), encoding="utf-8")
+            (k / ".env").write_text("KEY=x\n", encoding="utf-8")
+            (k / ".git" / "HEAD").write_text("ref\n", encoding="utf-8")
+            (root / ".agents" / "skills").mkdir(parents=True)
+            (root / ".agents" / "skills" / "k").symlink_to(k, target_is_directory=True)
+            mod = load_module(root)
+            real_walk = os.walk
+            if follow:  # junction 모사: walk 가 링크를 따라 들어간다
+                mod.os.walk = lambda top, **kw: real_walk(top, **{**kw, "followlinks": True})
+            try:
+                code = run_main(mod)
+            finally:
+                mod.os.walk = real_walk
+            for rel in (".env", ".git/HEAD", "SKILL.md"):
+                if not (k / rel).exists():
+                    failures.append(f"T15 실패(follow={follow}): 원본 {rel} 이 지워짐")
+            if code != 2:
+                failures.append(f"T15 실패(follow={follow}): 종료 코드 {code} (기대 2)")
+
+    # T16: 생성물 안 파일 symlink 는 쓰기가 링크를 타고 밖을 덮으므로 멈춘다
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td).resolve()
+        root = base / "proj"
+        k = root / ".claude" / "skills" / "foo"
+        k.mkdir(parents=True)
+        (root / "CLAUDE.md").write_text("# 루트\n", encoding="utf-8")
+        (k / "SKILL.md").write_text(SKILL_MD.format(name="foo"), encoding="utf-8")
+        ext = base / "ext-SKILL.md"
+        ext.write_text("외부 정본\n", encoding="utf-8")
+        (root / ".agents" / "skills" / "foo").mkdir(parents=True)
+        (root / ".agents" / "skills" / "foo" / "SKILL.md").symlink_to(ext)
+        mod = load_module(root)
+        code = run_main(mod)
+        if ext.read_text(encoding="utf-8") != "외부 정본\n":
+            failures.append("T16 실패: 생성물의 파일 symlink 를 타고 외부 파일을 덮어씀")
+        if code != 2:
+            failures.append(f"T16 실패: 종료 코드 {code} (기대 2)")
+
+    # T17: 생성물(.agents)이 프로젝트 밖 실체면 멈춘다
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td).resolve()
+        root = base / "proj"
+        k = root / ".claude" / "skills" / "k"
+        k.mkdir(parents=True)
+        (root / "CLAUDE.md").write_text("# 루트\n", encoding="utf-8")
+        (k / "SKILL.md").write_text(SKILL_MD.format(name="k"), encoding="utf-8")
+        outside = base / "home-agents"
+        (outside / "skills" / "other").mkdir(parents=True)
+        (outside / "skills" / "other" / "SKILL.md").write_text(SKILL_MD.format(name="other"), encoding="utf-8")
+        (root / ".agents").symlink_to(outside, target_is_directory=True)
+        mod = load_module(root)
+        code = run_main(mod)
+        if not (outside / "skills" / "other" / "SKILL.md").exists():
+            failures.append("T17 실패: 프로젝트 밖 생성물 자리의 파일이 지워짐")
+        if code != 2:
+            failures.append(f"T17 실패: 종료 코드 {code} (기대 2)")
+
+    # T18: 생성물 루트가 원본 안쪽을 가리키면(원본 ⊃ 생성물) 멈춘다
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td).resolve()
+        (root / "CLAUDE.md").write_text("# 루트\n", encoding="utf-8")
+        k = root / ".claude" / "skills" / "k"
+        (k / "sub").mkdir(parents=True)
+        (k / "SKILL.md").write_text(SKILL_MD.format(name="k"), encoding="utf-8")
+        (k / ".env").write_text("KEY=x\n", encoding="utf-8")
+        (k / "sub" / "a.py").write_text("x = 1\n", encoding="utf-8")
+        (root / ".agents").mkdir()
+        (root / ".agents" / "skills").symlink_to(k, target_is_directory=True)
+        mod = load_module(root)
+        code = run_main(mod)
+        for rel in (".env", "SKILL.md", "sub/a.py"):
+            if not (k / rel).exists():
+                failures.append(f"T18 실패: 원본 {rel} 이 지워짐")
+        if code != 2:
+            failures.append(f"T18 실패: 종료 코드 {code} (기대 2)")
+
+    # T19: .envrc 와 확장자 없는 secrets 파일도 제외
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td).resolve()
+        (root / "CLAUDE.md").write_text("# 루트\n", encoding="utf-8")
+        k = root / ".claude" / "skills" / "k"
+        k.mkdir(parents=True)
+        (k / "SKILL.md").write_text(SKILL_MD.format(name="k"), encoding="utf-8")
+        (k / ".envrc").write_text("export KEY=x\n", encoding="utf-8")
+        (k / "secrets").write_text("KEY=x\n", encoding="utf-8")
+        mod = load_module(root)
+        run_main(mod)
+        out = root / ".agents" / "skills" / "k"
+        for name in (".envrc", "secrets"):
+            if (out / name).exists():
+                failures.append(f"T19 실패: {name} 이 미러링됨")
+
+    # T20: 원본 루트가 생성물 안쪽을 가리키면(생성물 ⊃ 원본) 멈춘다
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td).resolve()
+        (root / "CLAUDE.md").write_text("# 루트\n", encoding="utf-8")
+        x = root / ".agents" / "skills" / "x"
+        x.mkdir(parents=True)
+        (x / "SKILL.md").write_text(SKILL_MD.format(name="x"), encoding="utf-8")
+        (x / ".env").write_text("KEY=x\n", encoding="utf-8")
+        (root / ".claude").mkdir()
+        (root / ".claude" / "skills").symlink_to(x, target_is_directory=True)
+        mod = load_module(root)
+        code = run_main(mod)
+        for rel in ("SKILL.md", ".env"):
+            if not (x / rel).exists():
+                failures.append(f"T20 실패: 생성물 안의 원본 {rel} 이 지워짐")
+        if code != 2:
+            failures.append(f"T20 실패: 종료 코드 {code} (기대 2)")
+
+    # T21: 원본 안 junction 이 생성물 안을 가리키면 멈춘다(junction 모사: symlink 로 만들고
+    #      is_symlink 는 False·is_junction 은 True 로 보이게, walk 는 따라가게)
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td).resolve()
+        (root / "CLAUDE.md").write_text("# 루트\n", encoding="utf-8")
+        lib = root / ".agents" / "skills" / "k" / "lib"
+        lib.mkdir(parents=True)
+        (lib / "real.py").write_text("x = 1\n", encoding="utf-8")
+        (lib / ".env").write_text("KEY=x\n", encoding="utf-8")
+        k = root / ".claude" / "skills" / "k"
+        k.mkdir(parents=True)
+        (k / "SKILL.md").write_text(SKILL_MD.format(name="k"), encoding="utf-8")
+        (k / "junc").symlink_to(lib, target_is_directory=True)
+        mod = load_module(root)
+
+        class JunctionPath(type(Path())):
+            def is_symlink(self):
+                return False if self.name == "junc" else super().is_symlink()
+
+            def is_junction(self):
+                return self.name == "junc"
+
+        real_walk, real_path = os.walk, mod.Path
+        mod.os.walk = lambda top, **kw: real_walk(top, **{**kw, "followlinks": True})
+        mod.Path = JunctionPath
+        try:
+            code = run_main(mod)
+        finally:
+            mod.os.walk, mod.Path = real_walk, real_path
+        if not (lib / ".env").exists():
+            failures.append("T21 실패: 생성물을 가리키는 junction 때문에 .env 가 지워짐")
+        if code != 2:
+            failures.append(f"T21 실패: 종료 코드 {code} (기대 2)")
     return failures
 
 
